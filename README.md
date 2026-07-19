@@ -18,7 +18,7 @@ Winnow is a forward HTTP/S proxy that maintains a health database for every prox
   - TLS certificate validation (optional strict mode)
   - Light streaming (size threshold)
   - Heavy streaming + POST (strict mode only)
-- **Real-time dashboard** — SSE-powered web UI with live event log, stats, and proxy table
+- **Real-time dashboard** — SSE-powered web UI with live event log, stats, and proxy table (available in Portuguese and English, auto-detected from the browser)
 - **REST API** — stats, health data, proxy management, config hot-reload
 - **SSRF protection** — private ranges blocked at connect level
 - **Docker** — multi-stage build with non-root user and healthcheck

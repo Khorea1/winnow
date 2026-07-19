@@ -70,7 +70,7 @@ export function httpConnect(upstream: ParsedProxy, tHost: string, tPort: number,
     // Uses string concatenation instead of a nested template literal, which broke tsc.
     let auth = ''
     if (user) {
-      const token = Buffer.from(user + ':' + pass).toString('base64')
+      const token = Buffer.from(user + ':' + u.password).toString('base64')
       auth = 'Proxy-Authorization: Basic ' + token + '\r\n'
     }
     const sock = net.connect(pp, ph)

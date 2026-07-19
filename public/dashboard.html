@@ -108,7 +108,7 @@
     padding: 16px 20px; margin-bottom: 16px;
     background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
   }
-  .brand { display: flex; align-items: baseline; gap: 12px; }
+  .brand { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
   .brand h1 { font-family: var(--font-display); font-size: 1.2rem; font-weight: 700; letter-spacing: -0.01em; }
   .brand .tag { font-family: var(--font-mono); font-size: 11px; color: var(--ink-faint); border: 1px solid var(--line); padding: 2px 7px; border-radius: 999px; }
   .status-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -119,6 +119,13 @@
   .dot.down { background: var(--ink-faint); box-shadow: none; }
   @keyframes dot-pulse { 0%,100% { box-shadow: 0 0 0 0 var(--ok-soft);} 50% { box-shadow: 0 0 0 5px transparent;} }
   .status-chip.busy { background: var(--amber-soft); border-color: var(--amber-line); color: var(--amber); }
+
+  /* ---------- language switch ---------- */
+  .lang-switch { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .lang-btn { background: var(--panel-2); border: none; color: var(--ink-faint); font-size: 10.5px; font-weight: 600; letter-spacing: 0.03em; padding: 5px 10px; cursor: pointer; font-family: inherit; }
+  .lang-btn + .lang-btn { border-left: 1px solid var(--line); }
+  .lang-btn:hover { color: var(--ink-dim); }
+  .lang-btn.active { background: var(--amber-soft); color: var(--amber); }
 
   /* ---------- overview / signature strip ---------- */
   .overview { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 12px; }
@@ -165,6 +172,7 @@
   .proxy-cell .addr { font-family: var(--font-mono); font-size: 12px; color: var(--ink-dim); max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .icon-btn { background: none; border: 1px solid var(--line); border-radius: 6px; min-width: 30px; min-height: 30px; display: inline-flex; align-items: center; justify-content: center; color: var(--ink-faint); cursor: pointer; flex-shrink: 0; font-size: 12px; }
   .icon-btn:hover { border-color: var(--ink-faint); color: var(--ink-dim); }
+  .icon-btn.danger:hover { border-color: var(--err-line); color: var(--err); }
   .num { font-weight: 600; font-family: var(--font-mono); }
   .num.ok { color: var(--ok); } .num.warn { color: var(--warn); } .num.err { color: var(--err); }
   .empty-row { padding: 44px 18px; text-align: center; color: var(--ink-faint); font-size: 13px; }
@@ -239,13 +247,13 @@ th[aria-sort="descending"] .sort-arrow::before { content: '\2193'; }
   @keyframes indet { 0% { transform: translateX(-120%); } 100% { transform: translateX(430%); } }
 
   #validate-log { margin-top: 12px; max-height: 220px; overflow: auto; background: #0b0e11; border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; font-family: var(--font-mono); font-size: 11px; line-height: 1.6; }
-  #validate-log:empty::before { content: "Sem atividade ainda. Clique em Validar para iniciar."; color: var(--ink-faint); font-style: italic; }
+  #validate-log:empty::before { content: attr(data-empty-msg); color: var(--ink-faint); font-style: italic; }
   #validate-log div { padding: 2px 0; border-bottom: 1px solid var(--line-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #validate-log div.ok { color: var(--ok); } #validate-log div.fail { color: var(--err); opacity: 0.9; } #validate-log div.info { color: var(--ink-faint); }
 
 /* ---------- event feed ---------- */
 #event-feed { max-height: 320px; overflow: auto; background: #0b0e11; padding: 6px 10px; font-family: var(--font-mono); font-size: 11px; line-height: 1.6; }
-#event-feed:empty::before { content: "Sem atividade ainda."; color: var(--ink-faint); font-style: italic; }
+#event-feed:empty::before { content: attr(data-empty-msg); color: var(--ink-faint); font-style: italic; }
 .evt-line { display: flex; align-items: center; gap: 6px; padding: 2px 0; border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
 .evt-time { color: var(--ink-faint); flex-shrink: 0; font-size: 10px; width: 60px; }
 .evt-type { display: inline-flex; padding: 0 5px; border-radius: 3px; font-size: 9px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; flex-shrink: 0; height: 16px; align-items: center; }
@@ -284,38 +292,42 @@ th[aria-sort="descending"] .sort-arrow::before { content: '\2193'; }
   <header class="topbar">
     <div class="brand">
       <h1>Winnow</h1>
-      <span class="tag">painel de operação</span>
+      <span class="tag" data-i18n="tagline">painel de operação</span>
       <button class="sidebar-toggle" id="sidebar-toggle" type="button" aria-label="Esconder painel de configuração" title="Esconder configurações">
         <span class="icon" aria-hidden="true">⚙</span>
-        <span class="icon-label" id="sidebar-toggle-label">Configurações</span>
+        <span class="icon-label" id="sidebar-toggle-label" data-i18n="sidebarHideLabel">Esconder</span>
       </button>
+      <div class="lang-switch" id="lang-switch" role="group" aria-label="Language / Idioma">
+        <button class="lang-btn" data-lang="pt" type="button">PT</button>
+        <button class="lang-btn" data-lang="en" type="button">EN</button>
+      </div>
     </div>
     <div class="status-row">
-      <span class="status-chip" id="sse-chip"><span class="dot down" id="sse-dot"></span><span id="sse-text">conectando…</span></span>
+      <span class="status-chip" id="sse-chip"><span class="dot down" id="sse-dot"></span><span id="sse-text" data-i18n="connecting">conectando…</span></span>
       <span class="status-chip mono" id="live-clock">--:--:--</span>
-      <span class="status-chip busy" id="running-chip" style="display:none">validação em andamento</span>
+      <span class="status-chip busy" id="running-chip" style="display:none" data-i18n="validatingChip">validação em andamento</span>
     </div>
   </header>
 
   <div class="overview">
-    <div class="metric"><div class="k">Proxies no pool</div><div class="v" id="stat-total">0</div><div class="sub" id="stat-total-sub">—</div></div>
-    <div class="metric"><div class="k">Saudáveis agora</div><div class="v amber" id="stat-alive">0</div><div class="sub">amostra: <span id="stat-sample-banned">0</span> banidos</div></div>
-    <div class="metric"><div class="k">Retries / timeout</div><div class="v" id="stat-retries">—</div><div class="sub"><span id="stat-timeout">—</span> ms por tentativa</div></div>
-    <div class="metric"><div class="k">Alvos monitorados</div><div class="v" style="font-size:1rem; font-weight:600" id="stat-targets">—</div><div class="sub">checagem periódica</div></div>
-    <div class="metric file"><div class="k">Arquivo ativo</div><div class="v" id="stat-file">—</div><div class="sub">definido no início do processo</div></div>
+    <div class="metric"><div class="k" data-i18n="statTotalLabel">Proxies no pool</div><div class="v" id="stat-total">0</div><div class="sub" id="stat-total-sub">—</div></div>
+    <div class="metric"><div class="k" data-i18n="statAliveLabel">Saudáveis agora</div><div class="v amber" id="stat-alive">0</div><div class="sub"><span data-i18n="sampleBannedPrefix">amostra:</span> <span id="stat-sample-banned">0</span> <span data-i18n="bannedSuffix">banidos</span></div></div>
+    <div class="metric"><div class="k" data-i18n="statRetriesLabel">Retries / timeout</div><div class="v" id="stat-retries">—</div><div class="sub"><span id="stat-timeout">—</span> <span data-i18n="msPerAttempt">ms por tentativa</span></div></div>
+    <div class="metric"><div class="k" data-i18n="statTargetsLabel">Alvos monitorados</div><div class="v" style="font-size:1rem; font-weight:600" id="stat-targets">—</div><div class="sub" data-i18n="periodicCheck">checagem periódica</div></div>
+    <div class="metric file"><div class="k" data-i18n="statFileLabel">Arquivo ativo</div><div class="v" id="stat-file">—</div><div class="sub" data-i18n="definedAtStart">definido no início do processo</div></div>
   </div>
 
   <div class="spectrum-card">
     <div class="spectrum-head">
-      <h2>Distribuição de saúde da amostra</h2>
+      <h2 data-i18n="spectrumTitle">Distribuição de saúde da amostra</h2>
       <div class="spectrum-legend">
-        <span><i style="background:var(--ok)"></i>saudável</span>
-        <span><i style="background:var(--warn)"></i>lento</span>
-        <span><i style="background:var(--err)"></i>com erro</span>
-        <span><i style="background:var(--ban)"></i>banido</span>
+        <span><i style="background:var(--ok)"></i><span data-i18n="legendHealthy">saudável</span></span>
+        <span><i style="background:var(--warn)"></i><span data-i18n="legendSlow">lento</span></span>
+        <span><i style="background:var(--err)"></i><span data-i18n="legendError">com erro</span></span>
+        <span><i style="background:var(--ban)"></i><span data-i18n="legendBanned">banido</span></span>
       </div>
     </div>
-    <div id="spectrum" role="img" aria-label="Barras representando o estado de cada proxy da amostra atual"></div>
+    <div id="spectrum" role="img" data-i18n-aria="spectrumAriaLabel" aria-label="Barras representando o estado de cada proxy da amostra atual"></div>
   </div>
 
   <div class="layout" id="layout">
@@ -323,16 +335,16 @@ th[aria-sort="descending"] .sort-arrow::before { content: '\2193'; }
 
       <div class="card">
         <div class="card-head">
-          <h2>Pool de proxies <span class="count" id="pool-count"></span></h2>
+          <h2><span data-i18n="poolTitle">Pool de proxies</span> <span class="count" id="pool-count"></span></h2>
           <div class="tools" style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
-            <div class="filter-chips" id="filter-chips" role="group" aria-label="Filtrar por estado">
-              <button class="filter-chip ok" data-status="ok">ok <span class="count" data-status="ok"></span></button>
-              <button class="filter-chip warn" data-status="warn">lento <span class="count" data-status="warn"></span></button>
-              <button class="filter-chip err" data-status="err">erro <span class="count" data-status="err"></span></button>
-              <button class="filter-chip ban" data-status="ban">banido <span class="count" data-status="ban"></span></button>
+            <div class="filter-chips" id="filter-chips" role="group" data-i18n-aria="filterAriaGroup" aria-label="Filtrar por estado">
+              <button class="filter-chip ok" data-status="ok"><span data-i18n="filterChipOk">ok</span> <span class="count" data-status="ok"></span></button>
+              <button class="filter-chip warn" data-status="warn"><span data-i18n="filterChipWarn">lento</span> <span class="count" data-status="warn"></span></button>
+              <button class="filter-chip err" data-status="err"><span data-i18n="filterChipErr">erro</span> <span class="count" data-status="err"></span></button>
+              <button class="filter-chip ban" data-status="ban"><span data-i18n="filterChipBan">banido</span> <span class="count" data-status="ban"></span></button>
             </div>
-            <div class="search-wrap"><input id="proxy-filter" type="text" placeholder="filtrar (Ctrl+K)" spellcheck="false" aria-label="Filtrar proxies"></div>
-            <button class="icon-btn" id="btn-copy-all" title="Copiar proxies filtrados" aria-label="Copiar proxies filtrados">⧉</button>
+            <div class="search-wrap"><input id="proxy-filter" type="text" data-i18n-placeholder="filterPlaceholder" placeholder="filtrar (Ctrl+K)" spellcheck="false" data-i18n-aria="filterAriaInput" aria-label="Filtrar proxies"></div>
+            <button class="icon-btn" id="btn-copy-all" data-i18n-title="copyAllTitle" title="Copiar proxies filtrados" data-i18n-aria="copyAllTitle" aria-label="Copiar proxies filtrados">⧉</button>
           </div>
         </div>
         <div class="card-body">
@@ -340,13 +352,13 @@ th[aria-sort="descending"] .sort-arrow::before { content: '\2193'; }
             <table>
               <thead>
                 <tr>
-                  <th data-sort="status" tabindex="0" aria-sort="none">Status <span class="sort-arrow" aria-hidden="true"></span></th>
-                  <th data-sort="proxy" tabindex="0" aria-sort="none">Proxy <span class="sort-arrow" aria-hidden="true"></span></th>
-                  <th data-sort="score" tabindex="0" aria-sort="none">Score <span class="sort-arrow" aria-hidden="true"></span></th>
-                  <th data-sort="latency" tabindex="0" aria-sort="none">Latência <span class="sort-arrow" aria-hidden="true"></span></th>
-                  <th data-sort="errors" tabindex="0" aria-sort="none">Erros <span class="sort-arrow" aria-hidden="true"></span></th>
-                  <th data-sort="ok" tabindex="0" aria-sort="none">OKs <span class="sort-arrow" aria-hidden="true"></span></th>
-                  <th>Banido até</th>
+                  <th data-sort="status" tabindex="0" aria-sort="none"><span data-i18n="thStatus">Status</span> <span class="sort-arrow" aria-hidden="true"></span></th>
+                  <th data-sort="proxy" tabindex="0" aria-sort="none"><span data-i18n="thProxy">Proxy</span> <span class="sort-arrow" aria-hidden="true"></span></th>
+                  <th data-sort="score" tabindex="0" aria-sort="none"><span data-i18n="thScore">Score</span> <span class="sort-arrow" aria-hidden="true"></span></th>
+                  <th data-sort="latency" tabindex="0" aria-sort="none"><span data-i18n="thLatency">Latência</span> <span class="sort-arrow" aria-hidden="true"></span></th>
+                  <th data-sort="errors" tabindex="0" aria-sort="none"><span data-i18n="thErrors">Erros</span> <span class="sort-arrow" aria-hidden="true"></span></th>
+                  <th data-sort="ok" tabindex="0" aria-sort="none"><span data-i18n="thOk">OKs</span> <span class="sort-arrow" aria-hidden="true"></span></th>
+                  <th data-i18n="thBannedUntil">Banido até</th>
                 </tr>
               </thead>
               <tbody id="proxy-table"></tbody>
@@ -356,27 +368,27 @@ th[aria-sort="descending"] .sort-arrow::before { content: '\2193'; }
         </div>
         <div class="trend-wrap">
           <svg id="trend-svg" viewBox="0 0 600 64" preserveAspectRatio="none"></svg>
-          <div class="trend-labels"><span>latência média (ms)</span><span>erros acumulados</span></div>
+          <div class="trend-labels"><span data-i18n="trendLatency">latência média (ms)</span><span data-i18n="trendErrors">erros acumulados</span></div>
         </div>
       </div>
 
       <div class="card">
         <div class="card-head">
-          <h2>Log em tempo real</h2>
+          <h2 data-i18n="logTitle">Log em tempo real</h2>
           <div class="tools">
-            <label class="toggle-row" style="padding:0"><input type="checkbox" id="chk-autoscroll" checked><span style="font-size:11px">autoscroll</span></label>
-            <button class="icon-btn" id="btn-clear-logs" title="Limpar log" aria-label="Limpar log">✕</button>
+            <label class="toggle-row" style="padding:0"><input type="checkbox" id="chk-autoscroll" checked><span style="font-size:11px" data-i18n="autoscroll">autoscroll</span></label>
+            <button class="icon-btn" id="btn-clear-logs" data-i18n-title="clearLogTitle" title="Limpar log" data-i18n-aria="clearLogTitle" aria-label="Limpar log">✕</button>
           </div>
         </div>
-        <div class="card-body"><div id="log" role="log" aria-live="off" aria-label="Log em tempo real"><div class="log-empty">Aguardando eventos…</div></div></div>
+        <div class="card-body"><div id="log" role="log" aria-live="off" data-i18n-aria="logAriaLabel" aria-label="Log em tempo real"><div class="log-empty" data-i18n="logWaiting">Aguardando eventos…</div></div></div>
       </div>
 
       <div class="card">
         <div class="card-head">
-          <h2>Eventos de proxy</h2>
+          <h2 data-i18n="eventsTitle">Eventos de proxy</h2>
           <div class="tools">
-            <select id="evt-filter" aria-label="Filtrar por tipo" style="font-size:11px;padding:4px 8px;border-radius:6px;background:var(--panel-2);border:1px solid var(--line);color:var(--ink-dim);font-family:var(--font-mono)">
-              <option value="">todos</option>
+            <select id="evt-filter" data-i18n-aria="evtFilterAria" aria-label="Filtrar por tipo" style="font-size:11px;padding:4px 8px;border-radius:6px;background:var(--panel-2);border:1px solid var(--line);color:var(--ink-dim);font-family:var(--font-mono)">
+              <option value="" data-i18n="evtFilterAll">todos</option>
               <option value="connect">CONNECT</option>
               <option value="http">HTTP</option>
               <option value="healthcheck">healthcheck</option>
@@ -386,84 +398,85 @@ th[aria-sort="descending"] .sort-arrow::before { content: '\2193'; }
               <option value="freeze">freeze</option>
               <option value="pool">pool</option>
             </select>
-            <label class="toggle-row" style="padding:0"><input type="checkbox" id="evt-autoscroll" checked><span style="font-size:11px">autoscroll</span></label>
-            <button class="icon-btn" id="btn-clear-events" title="Limpar eventos" aria-label="Limpar eventos">✕</button>
+            <label class="toggle-row" style="padding:0"><input type="checkbox" id="evt-autoscroll" checked><span style="font-size:11px" data-i18n="autoscroll">autoscroll</span></label>
+            <button class="icon-btn" id="btn-clear-events" data-i18n-title="clearEventsTitle" title="Limpar eventos" data-i18n-aria="clearEventsTitle" aria-label="Limpar eventos">✕</button>
           </div>
         </div>
-        <div class="card-body"><div id="event-feed" role="log" aria-live="off" aria-label="Eventos de proxy"><div class="log-empty">Aguardando eventos de conexão…</div></div></div>
+        <div class="card-body"><div id="event-feed" role="log" aria-live="off" data-i18n-aria="eventFeedAria" aria-label="Eventos de proxy"><div class="log-empty" data-i18n="eventsWaiting">Aguardando eventos de conexão…</div></div></div>
       </div>
 
     </main>
 
     <aside>
       <div class="card">
-        <div class="card-head"><h2>Configuração do rotator</h2></div>
+        <div class="card-head"><h2 data-i18n="rotatorConfigTitle">Configuração do rotator</h2></div>
         <div class="card-body pad">
-          <div class="field"><label>Arquivo de proxies</label><div class="readonly-field" id="cfg-file-readonly">—</div><div class="hint">Definido por linha de comando ou variável de ambiente ao iniciar o processo — não é editável por aqui.</div></div>
+          <div class="field"><label data-i18n="proxyFileLabel">Arquivo de proxies</label><div class="readonly-field" id="cfg-file-readonly">—</div><div class="hint" data-i18n="proxyFileHint">Definido por linha de comando ou variável de ambiente ao iniciar o processo — não é editável por aqui.</div></div>
           <div class="field-row">
-            <div class="field"><label for="cfg-retries">Retries</label><input type="number" id="cfg-retries" class="mono" min="1" max="20" value="5"><div class="hint">tentativas por requisição</div></div>
-            <div class="field"><label for="cfg-maxErrors">Máx. erros</label><input type="number" id="cfg-maxErrors" class="mono" min="0" max="100" value="3"><div class="hint">acima disso, proxy é ignorado</div></div>
+            <div class="field"><label for="cfg-retries" data-i18n="retriesLabel">Retries</label><input type="number" id="cfg-retries" class="mono" min="1" max="20" value="5"><div class="hint" data-i18n="retriesHint">tentativas por requisição</div></div>
+            <div class="field"><label for="cfg-maxErrors" data-i18n="maxErrorsLabel">Máx. erros</label><input type="number" id="cfg-maxErrors" class="mono" min="0" max="100" value="3"><div class="hint" data-i18n="maxErrorsHint">acima disso, proxy é ignorado</div></div>
           </div>
-          <div class="field"><label for="cfg-timeout">Timeout do rotator (ms)</label><input type="number" id="cfg-timeout" class="mono" min="500" max="60000" value="3500"></div>
-          <div class="field"><label for="cfg-upstreamIdleTimeout">Timeout idle do upstream (ms)</label><input type="number" id="cfg-upstreamIdleTimeout" class="mono" min="0" max="120000" value="0"><div class="hint">0 = automático (2× timeout do rotator), define quanto tempo sem dados do upstream antes de abortar</div></div>
-          <div class="field"><label for="cfg-targets">Alvos de health-check (um por linha)</label><textarea id="cfg-targets" rows="3" class="mono" placeholder="httpbin.org:80&#10;opencode.ai:443"></textarea></div>
-          <button id="cfg-save" class="btn btn-primary btn-full">Salvar configuração</button>
+          <div class="field"><label for="cfg-timeout" data-i18n="rotatorTimeoutLabel">Timeout do rotator (ms)</label><input type="number" id="cfg-timeout" class="mono" min="500" max="60000" value="3500"></div>
+          <div class="field"><label for="cfg-upstreamIdleTimeout" data-i18n="upstreamIdleLabel">Timeout idle do upstream (ms)</label><input type="number" id="cfg-upstreamIdleTimeout" class="mono" min="0" max="120000" value="0"><div class="hint" data-i18n="upstreamIdleHint">0 = automático (2× timeout do rotator), define quanto tempo sem dados do upstream antes de abortar</div></div>
+          <div class="field"><label for="cfg-targets" data-i18n="targetsLabel">Alvos de health-check (um por linha)</label><textarea id="cfg-targets" rows="3" class="mono" placeholder="httpbin.org:80&#10;opencode.ai:443"></textarea></div>
+          <button id="cfg-save" class="btn btn-primary btn-full" data-i18n="saveConfigBtn">Salvar configuração</button>
           <div id="cfg-msg" style="margin-top:9px; font-size:12px; min-height:16px;" role="status"></div>
         </div>
       </div>
 
       <div class="card">
-        <div class="card-head"><h2>Validador</h2><span class="status-chip mono" id="val-mode-pill" style="font-size:11px">quick</span></div>
+        <div class="card-head"><h2 data-i18n="validatorTitle">Validador</h2><span class="status-chip mono" id="val-mode-pill" style="font-size:11px">quick</span></div>
         <div class="card-body pad">
           <div class="field-row">
-            <div class="field"><label for="cfg-val-threads">Threads</label><input type="number" id="cfg-val-threads" class="mono" min="1" max="100" value="20"><div class="hint">10–20 para proxies gratuitos</div></div>
-            <div class="field"><label for="cfg-val-mode">Modo</label>
+            <div class="field"><label for="cfg-val-threads" data-i18n="threadsLabel">Threads</label><input type="number" id="cfg-val-threads" class="mono" min="1" max="100" value="20"><div class="hint" data-i18n="threadsHint">10–20 para proxies gratuitos</div></div>
+            <div class="field"><label for="cfg-val-mode" data-i18n="modeLabel">Modo</label>
               <select id="cfg-val-mode" class="mono">
-                <option value="quick">quick — só IP</option>
-                <option value="standard">standard — IP + stream</option>
-                <option value="strict">strict — completo</option>
-                <option value="stream">stream — só streaming</option>
+                <option value="tcp-only" data-i18n="modeTcpOnly">tcp-only — só TCP</option>
+                <option value="quick" data-i18n="modeQuick">quick — só IP</option>
+                <option value="standard" data-i18n="modeStandard">standard — IP + stream</option>
+                <option value="strict" data-i18n="modeStrict">strict — completo</option>
+                <option value="stream" data-i18n="modeStream">stream — só streaming</option>
               </select>
             </div>
           </div>
 
-          <div class="field"><label for="cfg-val-baseurl">Base URL</label><input type="text" id="cfg-val-baseurl" class="mono" placeholder="http://httpbin.org"><div class="hint">endpoints http:// tendem a funcionar melhor com proxies http</div></div>
+          <div class="field"><label for="cfg-val-baseurl" data-i18n="baseUrlLabel">Base URL</label><input type="text" id="cfg-val-baseurl" class="mono" placeholder="http://httpbin.org"><div class="hint" data-i18n="baseUrlHint">endpoints http:// tendem a funcionar melhor com proxies http</div></div>
 
           <div class="field-row">
-            <div class="field"><label for="cfg-val-maxlat">Latência máx. (ms)</label><input type="number" id="cfg-val-maxlat" class="mono" min="500" max="30000" value="7000"></div>
-            <div class="field"><label for="cfg-val-conntimeout">Timeout de conexão (s)</label><input type="number" id="cfg-val-conntimeout" class="mono" min="1" max="30" value="4"></div>
+            <div class="field"><label for="cfg-val-maxlat" data-i18n="maxLatLabel">Latência máx. (ms)</label><input type="number" id="cfg-val-maxlat" class="mono" min="500" max="30000" value="7000"></div>
+            <div class="field"><label for="cfg-val-conntimeout" data-i18n="connTimeoutLabel">Timeout de conexão (s)</label><input type="number" id="cfg-val-conntimeout" class="mono" min="1" max="30" value="4"></div>
           </div>
 
           <div class="field-row">
-            <div class="field"><label for="cfg-val-throttle">Throttle (ms)</label><input type="number" id="cfg-val-throttle" class="mono" min="0" max="5000" value="100"><div class="hint">jitter aleatório 0..N</div></div>
-            <div class="field"><label for="cfg-val-ttfb">Tolerância de TTFB (%)</label><input type="number" id="cfg-val-ttfb" class="mono" min="1" max="100" value="100"><div class="hint">100 desativa a checagem</div></div>
+            <div class="field"><label for="cfg-val-throttle" data-i18n="throttleLabel">Throttle (ms)</label><input type="number" id="cfg-val-throttle" class="mono" min="0" max="5000" value="100"><div class="hint" data-i18n="throttleHint">jitter aleatório 0..N</div></div>
+            <div class="field"><label for="cfg-val-ttfb" data-i18n="ttfbLabel">Tolerância de TTFB (%)</label><input type="number" id="cfg-val-ttfb" class="mono" min="1" max="100" value="100"><div class="hint" data-i18n="ttfbHint">100 desativa a checagem</div></div>
           </div>
 
           <div class="field" style="display:flex; flex-direction:column; gap:2px; margin-top:2px;">
-            <label class="toggle-row"><input type="checkbox" id="cfg-val-prune"><span>Remover inválidos do arquivo ao final</span></label>
-            <label class="toggle-row"><input type="checkbox" id="cfg-val-anon"><span>Exigir anonimato (rejeita proxies transparentes)</span></label>
-            <label class="toggle-row"><input type="checkbox" id="cfg-val-insecure"><span>Ignorar certificado TLS inválido</span></label>
+            <label class="toggle-row"><input type="checkbox" id="cfg-val-prune"><span data-i18n="pruneLabel">Remover inválidos do arquivo ao final</span></label>
+            <label class="toggle-row"><input type="checkbox" id="cfg-val-anon"><span data-i18n="anonLabel">Exigir anonimato (rejeita proxies transparentes)</span></label>
+            <label class="toggle-row"><input type="checkbox" id="cfg-val-insecure"><span data-i18n="insecureLabel">Ignorar certificado TLS inválido</span></label>
           </div>
 
           <div id="val-mode-desc" class="mode-desc"></div>
 
           <div class="vstats">
-            <div class="cell"><div class="n" id="vstat-total" style="color:var(--ink-dim)">0</div><div class="l">total</div></div>
-            <div class="cell"><div class="n" id="vstat-ok" style="color:var(--ok)">0</div><div class="l">válidos</div></div>
-            <div class="cell"><div class="n" id="vstat-fail" style="color:var(--err)">0</div><div class="l">inválidos</div></div>
+            <div class="cell"><div class="n" id="vstat-total" style="color:var(--ink-dim)">0</div><div class="l" data-i18n="vstatTotal">total</div></div>
+            <div class="cell"><div class="n" id="vstat-ok" style="color:var(--ok)">0</div><div class="l" data-i18n="vstatOk">válidos</div></div>
+            <div class="cell"><div class="n" id="vstat-fail" style="color:var(--err)">0</div><div class="l" data-i18n="vstatFail">inválidos</div></div>
           </div>
           <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
           <div id="val-status" style="font-size:11px; color:var(--ink-faint); text-align:center; min-height:16px; margin-bottom:8px;"></div>
           <div class="action-row">
-            <button id="btn-validate" class="btn btn-full">Validar agora</button>
-            <button id="btn-stop-validate" class="btn btn-danger" style="display:none;">Parar</button>
+            <button id="btn-validate" class="btn btn-full" data-i18n="validateBtn">Validar agora</button>
+            <button id="btn-stop-validate" class="btn btn-danger" style="display:none;" data-i18n="stopBtn">Parar</button>
           </div>
-          <div id="validate-log" role="log" aria-live="polite" aria-label="Resultados da validação"></div>
+          <div id="validate-log" role="log" aria-live="polite" data-i18n-aria="validateLogAria" aria-label="Resultados da validação"></div>
       </div>
     </aside>
   </div>
 
-  <div class="footer"><span>SSE em tempo real</span><span><span class="kbd">Ctrl+K</span> para filtrar o pool</span></div>
+  <div class="footer"><span data-i18n="footerSse">SSE em tempo real</span><span><span class="kbd">Ctrl+K</span> <span data-i18n="footerCtrlK">para filtrar o pool</span></span></div>
 </div>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -477,6 +490,388 @@ function esc(s){
     return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[ch];
   });
 }
+
+/* ==================== i18n ==================== */
+const I18N = {
+  pt: {
+    pageTitle: 'Winnow — painel',
+    tagline: 'painel de operação',
+    sidebarHideLabel: 'Esconder',
+    sidebarShowLabel: 'Mostrar',
+    sidebarHideTitle: 'Esconder configurações',
+    sidebarShowTitle: 'Mostrar configurações',
+    sidebarHideAria: 'Esconder painel de configuração',
+    sidebarShowAria: 'Mostrar painel de configuração',
+    connecting: 'conectando…',
+    liveActive: 'tempo real ativo',
+    reconnecting: 'reconectando…',
+    validatingChip: 'validação em andamento',
+    statTotalLabel: 'Proxies no pool',
+    statAliveLabel: 'Saudáveis agora',
+    statRetriesLabel: 'Retries / timeout',
+    statTargetsLabel: 'Alvos monitorados',
+    statFileLabel: 'Arquivo ativo',
+    allVisible: 'todos visíveis',
+    sampleOf: 'amostra: {n} de {total}',
+    sampleBannedPrefix: 'amostra:',
+    bannedSuffix: 'banidos',
+    msPerAttempt: 'ms por tentativa',
+    periodicCheck: 'checagem periódica',
+    definedAtStart: 'definido no início do processo',
+    spectrumTitle: 'Distribuição de saúde da amostra',
+    legendHealthy: 'saudável',
+    legendSlow: 'lento',
+    legendError: 'com erro',
+    legendBanned: 'banido',
+    spectrumAriaLabel: 'Barras representando o estado de cada proxy da amostra atual',
+    poolTitle: 'Pool de proxies',
+    filterChipOk: 'ok',
+    filterChipWarn: 'lento',
+    filterChipErr: 'erro',
+    filterChipBan: 'banido',
+    filterAriaGroup: 'Filtrar por estado',
+    filterPlaceholder: 'filtrar (Ctrl+K)',
+    filterAriaInput: 'Filtrar proxies',
+    copyAllTitle: 'Copiar proxies filtrados',
+    thStatus: 'Status',
+    thProxy: 'Proxy',
+    thScore: 'Score',
+    thLatency: 'Latência',
+    thErrors: 'Erros',
+    thOk: 'OKs',
+    thBannedUntil: 'Banido até',
+    trendLatency: 'latência média (ms)',
+    trendErrors: 'erros acumulados',
+    logTitle: 'Log em tempo real',
+    autoscroll: 'autoscroll',
+    clearLogTitle: 'Limpar log',
+    logAriaLabel: 'Log em tempo real',
+    logWaiting: 'Aguardando eventos…',
+    logCleared: 'Log limpo.',
+    eventsTitle: 'Eventos de proxy',
+    evtFilterAria: 'Filtrar por tipo',
+    evtFilterAll: 'todos',
+    clearEventsTitle: 'Limpar eventos',
+    eventFeedAria: 'Eventos de proxy',
+    eventsWaiting: 'Aguardando eventos de conexão…',
+    eventsCleared: 'Eventos limpos.',
+    rotatorConfigTitle: 'Configuração do rotator',
+    proxyFileLabel: 'Arquivo de proxies',
+    proxyFileHint: 'Definido por linha de comando ou variável de ambiente ao iniciar o processo — não é editável por aqui.',
+    retriesLabel: 'Retries',
+    retriesHint: 'tentativas por requisição',
+    maxErrorsLabel: 'Máx. erros',
+    maxErrorsHint: 'acima disso, proxy é ignorado',
+    rotatorTimeoutLabel: 'Timeout do rotator (ms)',
+    upstreamIdleLabel: 'Timeout idle do upstream (ms)',
+    upstreamIdleHint: '0 = automático (2× timeout do rotator), define quanto tempo sem dados do upstream antes de abortar',
+    targetsLabel: 'Alvos de health-check (um por linha)',
+    saveConfigBtn: 'Salvar configuração',
+    validatorTitle: 'Validador',
+    threadsLabel: 'Threads',
+    threadsHint: '10–20 para proxies gratuitos',
+    modeLabel: 'Modo',
+    modeTcpOnly: 'tcp-only — só TCP',
+    modeQuick: 'quick — só IP',
+    modeStandard: 'standard — IP + stream',
+    modeStrict: 'strict — completo',
+    modeStream: 'stream — só streaming',
+    baseUrlLabel: 'Base URL',
+    baseUrlHint: 'endpoints http:// tendem a funcionar melhor com proxies http',
+    maxLatLabel: 'Latência máx. (ms)',
+    connTimeoutLabel: 'Timeout de conexão (s)',
+    throttleLabel: 'Throttle (ms)',
+    throttleHint: 'jitter aleatório 0..N',
+    ttfbLabel: 'Tolerância de TTFB (%)',
+    ttfbHint: '100 desativa a checagem',
+    pruneLabel: 'Remover inválidos do arquivo ao final',
+    anonLabel: 'Exigir anonimato (rejeita proxies transparentes)',
+    insecureLabel: 'Ignorar certificado TLS inválido',
+    vstatTotal: 'total',
+    vstatOk: 'válidos',
+    vstatFail: 'inválidos',
+    validateBtn: 'Validar agora',
+    validateBtnRunning: 'Validando…',
+    stopBtn: 'Parar',
+    stopBtnStopping: 'Parando…',
+    validateLogAria: 'Resultados da validação',
+    validateLogEmpty: 'Sem atividade ainda. Clique em Validar para iniciar.',
+    footerSse: 'SSE em tempo real',
+    footerCtrlK: 'para filtrar o pool',
+    copiedGeneric: 'Copiado',
+    copiedCount: 'Copiados {n} proxies',
+    copyFail: 'Não foi possível copiar',
+    copyBtnTitle: 'Copiar',
+    copyBtnAria: 'Copiar {proxy}',
+    delBtnTitle: 'Remover do pool',
+    delBtnAria: 'Remover {proxy} do pool',
+    delConfirm: 'Remover "{proxy}" do pool?\n\nIsso edita o arquivo de proxies e não pode ser desfeito.',
+    delSuccessToast: 'Proxy removido do pool',
+    delErrorToast: 'Erro ao remover: {msg}',
+    emptyNoMatch: 'Nenhum proxy para "{term}"',
+    emptyPoolEmpty: 'Pool vazio — rode uma validação para popular.',
+    emptyFilters: 'Nenhum proxy corresponde aos filtros.',
+    sampleShowing: 'Mostrando os {n} proxies com melhor score, de {total} no total.',
+    spectrumEmpty: 'Sem dados ainda — valide o arquivo de proxies para popular a amostra.',
+    statusOk: 'saudável',
+    statusWarn: 'lento',
+    statusErr: 'erro',
+    statusBan: 'banido',
+    evtStatusOk: 'OK',
+    evtStatusFail: 'FAIL',
+    evtStatusAttempt: 'TENT',
+    evtStatusInfo: 'INFO',
+    errStatsFetch: 'Erro ao buscar estatísticas: {msg}',
+    errSyncStatus: 'Falha ao sincronizar estado da validação: {msg}',
+    modeDescTcpOnly: 'Testa apenas se a conexão TCP com o proxy abre. Não valida HTTP nem os alvos configurados — o mais rápido possível, útil para uma primeira triagem grosseira.',
+    modeDescQuick: 'Testa apenas TCP + /ip. O mais rápido, ideal para listas grandes de proxies gratuitos — nunca falha por causa de buffering de streaming.',
+    modeDescStandard: 'TCP + /ip + 5 chunks de streaming (tolerante). Usa 100% de tolerância de TTFB por padrão para não reprovar proxies com buffering. Recomendado para testar streaming real.',
+    modeDescStrict: 'quick + streaming de 5 chunks + POST + streaming de 20 chunks. Mais rigoroso — vai reprovar boa parte dos proxies gratuitos.',
+    modeDescStream: 'Testa apenas streaming. Use com uma Stream URL própria para validar contra seu backend real (SSE, APIs de IA, etc).',
+    validationStarted: 'Validação iniciada — job #{id}, modo {mode}, {threads} threads',
+    validationStartedToast: 'Validação #{id} iniciada',
+    validationStartErr: 'Erro ao iniciar validação: {msg}',
+    validationStartErrToast: 'Erro ao iniciar validação',
+    stopRequested: 'Parada solicitada — encerrando processos…',
+    stopRequestedToast: 'Parando — deve levar menos de 2s',
+    stopErr: 'Erro ao parar: {msg}',
+    stopErrToast: 'Erro ao parar',
+    savingConfig: 'Salvando…',
+    configSaved: 'Configuração salva.',
+    configSavedToast: 'Configuração salva',
+    configErr: 'Erro: {msg}',
+    configErrToast: 'Erro ao salvar configuração',
+    errLoadConfig: 'Erro ao carregar configuração: {msg}',
+    connectedLog: 'Conectado — atualizações em tempo real ativas',
+    connLostLog: 'Conexão perdida — tentando reconectar em 3s…',
+    stoppingValidationLog: 'Parando validação — encerrando processos…',
+    validationStoppedLog: 'Validação interrompida pelo usuário',
+    validationErrLog: 'Erro na validação: {msg}',
+    validationDoneLog: 'Validação concluída: {ok} válidos, {fail} inválidos (código {code})',
+    validationStoppedToast: 'Validação parada',
+    validationDoneToast: 'Validação: {ok} ok / {fail} falhas',
+    preparing: 'Preparando…',
+    progressStatus: '{ok} válidos, {fail} inválidos — {done} de {total}',
+  },
+  en: {
+    pageTitle: 'Winnow — dashboard',
+    tagline: 'operations dashboard',
+    sidebarHideLabel: 'Hide',
+    sidebarShowLabel: 'Show',
+    sidebarHideTitle: 'Hide settings',
+    sidebarShowTitle: 'Show settings',
+    sidebarHideAria: 'Hide settings panel',
+    sidebarShowAria: 'Show settings panel',
+    connecting: 'connecting…',
+    liveActive: 'live updates active',
+    reconnecting: 'reconnecting…',
+    validatingChip: 'validation running',
+    statTotalLabel: 'Proxies in pool',
+    statAliveLabel: 'Healthy now',
+    statRetriesLabel: 'Retries / timeout',
+    statTargetsLabel: 'Monitored targets',
+    statFileLabel: 'Active file',
+    allVisible: 'all visible',
+    sampleOf: 'sample: {n} of {total}',
+    sampleBannedPrefix: 'sample:',
+    bannedSuffix: 'banned',
+    msPerAttempt: 'ms per attempt',
+    periodicCheck: 'periodic check',
+    definedAtStart: 'set when the process starts',
+    spectrumTitle: 'Health distribution of the sample',
+    legendHealthy: 'healthy',
+    legendSlow: 'slow',
+    legendError: 'errored',
+    legendBanned: 'banned',
+    spectrumAriaLabel: 'Bars representing the state of each proxy in the current sample',
+    poolTitle: 'Proxy pool',
+    filterChipOk: 'ok',
+    filterChipWarn: 'slow',
+    filterChipErr: 'error',
+    filterChipBan: 'banned',
+    filterAriaGroup: 'Filter by status',
+    filterPlaceholder: 'filter (Ctrl+K)',
+    filterAriaInput: 'Filter proxies',
+    copyAllTitle: 'Copy filtered proxies',
+    thStatus: 'Status',
+    thProxy: 'Proxy',
+    thScore: 'Score',
+    thLatency: 'Latency',
+    thErrors: 'Errors',
+    thOk: 'OKs',
+    thBannedUntil: 'Banned until',
+    trendLatency: 'average latency (ms)',
+    trendErrors: 'accumulated errors',
+    logTitle: 'Live log',
+    autoscroll: 'autoscroll',
+    clearLogTitle: 'Clear log',
+    logAriaLabel: 'Live log',
+    logWaiting: 'Waiting for events…',
+    logCleared: 'Log cleared.',
+    eventsTitle: 'Proxy events',
+    evtFilterAria: 'Filter by type',
+    evtFilterAll: 'all',
+    clearEventsTitle: 'Clear events',
+    eventFeedAria: 'Proxy events',
+    eventsWaiting: 'Waiting for connection events…',
+    eventsCleared: 'Events cleared.',
+    rotatorConfigTitle: 'Rotator configuration',
+    proxyFileLabel: 'Proxy file',
+    proxyFileHint: 'Set via command line or environment variable when the process starts — not editable here.',
+    retriesLabel: 'Retries',
+    retriesHint: 'attempts per request',
+    maxErrorsLabel: 'Max errors',
+    maxErrorsHint: 'above this, the proxy is ignored',
+    rotatorTimeoutLabel: 'Rotator timeout (ms)',
+    upstreamIdleLabel: 'Upstream idle timeout (ms)',
+    upstreamIdleHint: '0 = automatic (2× rotator timeout); how long without upstream data before aborting',
+    targetsLabel: 'Health-check targets (one per line)',
+    saveConfigBtn: 'Save configuration',
+    validatorTitle: 'Validator',
+    threadsLabel: 'Threads',
+    threadsHint: '10–20 for free proxies',
+    modeLabel: 'Mode',
+    modeTcpOnly: 'tcp-only — TCP only',
+    modeQuick: 'quick — IP only',
+    modeStandard: 'standard — IP + stream',
+    modeStrict: 'strict — full',
+    modeStream: 'stream — streaming only',
+    baseUrlLabel: 'Base URL',
+    baseUrlHint: 'http:// endpoints tend to work better with http proxies',
+    maxLatLabel: 'Max latency (ms)',
+    connTimeoutLabel: 'Connect timeout (s)',
+    throttleLabel: 'Throttle (ms)',
+    throttleHint: 'random jitter 0..N',
+    ttfbLabel: 'TTFB tolerance (%)',
+    ttfbHint: '100 disables the check',
+    pruneLabel: 'Remove invalid entries from the file when done',
+    anonLabel: 'Require anonymity (rejects transparent proxies)',
+    insecureLabel: 'Ignore invalid TLS certificate',
+    vstatTotal: 'total',
+    vstatOk: 'valid',
+    vstatFail: 'invalid',
+    validateBtn: 'Validate now',
+    validateBtnRunning: 'Validating…',
+    stopBtn: 'Stop',
+    stopBtnStopping: 'Stopping…',
+    validateLogAria: 'Validation results',
+    validateLogEmpty: 'No activity yet. Click Validate to start.',
+    footerSse: 'Live SSE',
+    footerCtrlK: 'to filter the pool',
+    copiedGeneric: 'Copied',
+    copiedCount: 'Copied {n} proxies',
+    copyFail: 'Could not copy',
+    copyBtnTitle: 'Copy',
+    copyBtnAria: 'Copy {proxy}',
+    delBtnTitle: 'Remove from pool',
+    delBtnAria: 'Remove {proxy} from pool',
+    delConfirm: 'Remove "{proxy}" from the pool?\n\nThis edits the proxy file and cannot be undone.',
+    delSuccessToast: 'Proxy removed from pool',
+    delErrorToast: 'Error removing: {msg}',
+    emptyNoMatch: 'No proxy matches "{term}"',
+    emptyPoolEmpty: 'Pool empty — run a validation to populate it.',
+    emptyFilters: 'No proxy matches the filters.',
+    sampleShowing: 'Showing the {n} proxies with the best score, out of {total} total.',
+    spectrumEmpty: 'No data yet — validate the proxy file to populate the sample.',
+    statusOk: 'healthy',
+    statusWarn: 'slow',
+    statusErr: 'error',
+    statusBan: 'banned',
+    evtStatusOk: 'OK',
+    evtStatusFail: 'FAIL',
+    evtStatusAttempt: 'ATT',
+    evtStatusInfo: 'INFO',
+    errStatsFetch: 'Error fetching stats: {msg}',
+    errSyncStatus: 'Failed to sync validation status: {msg}',
+    modeDescTcpOnly: 'Only tests whether the TCP connection to the proxy opens. Does not validate HTTP or the configured targets — the fastest option, useful for a first rough pass.',
+    modeDescQuick: 'Tests only TCP + /ip. The fastest option, ideal for large lists of free proxies — never fails because of streaming buffering.',
+    modeDescStandard: 'TCP + /ip + 5 streaming chunks (tolerant). Uses 100% TTFB tolerance by default so proxies with buffering aren\u2019t failed unfairly. Recommended for testing real streaming.',
+    modeDescStrict: 'quick + 5-chunk streaming + POST + 20-chunk streaming. Stricter — will fail a good share of free proxies.',
+    modeDescStream: 'Tests streaming only. Use with your own Stream URL to validate against your real backend (SSE, AI APIs, etc).',
+    validationStarted: 'Validation started — job #{id}, mode {mode}, {threads} threads',
+    validationStartedToast: 'Validation #{id} started',
+    validationStartErr: 'Error starting validation: {msg}',
+    validationStartErrToast: 'Error starting validation',
+    stopRequested: 'Stop requested — shutting down processes…',
+    stopRequestedToast: 'Stopping — should take less than 2s',
+    stopErr: 'Error stopping: {msg}',
+    stopErrToast: 'Error stopping',
+    savingConfig: 'Saving…',
+    configSaved: 'Configuration saved.',
+    configSavedToast: 'Configuration saved',
+    configErr: 'Error: {msg}',
+    configErrToast: 'Error saving configuration',
+    errLoadConfig: 'Error loading configuration: {msg}',
+    connectedLog: 'Connected — live updates active',
+    connLostLog: 'Connection lost — retrying in 3s…',
+    stoppingValidationLog: 'Stopping validation — shutting down processes…',
+    validationStoppedLog: 'Validation stopped by user',
+    validationErrLog: 'Validation error: {msg}',
+    validationDoneLog: 'Validation complete: {ok} valid, {fail} invalid (exit code {code})',
+    validationStoppedToast: 'Validation stopped',
+    validationDoneToast: 'Validation: {ok} ok / {fail} failed',
+    preparing: 'Preparing…',
+    progressStatus: '{ok} valid, {fail} invalid — {done} of {total}',
+  },
+};
+
+const LANG_KEY = 'rotator:lang';
+function detectDefaultLang(){
+  const saved = localStorage.getItem(LANG_KEY);
+  if (saved === 'pt' || saved === 'en') return saved;
+  return (navigator.language || '').toLowerCase().indexOf('pt') === 0 ? 'pt' : 'en';
+}
+let lang = detectDefaultLang();
+
+function t(key, vars){
+  const dict = I18N[lang] || I18N.en;
+  let str = dict[key];
+  if (str === undefined) str = (I18N.en[key] !== undefined ? I18N.en[key] : key);
+  if (vars) {
+    for (const k in vars) str = str.split('{' + k + '}').join(vars[k]);
+  }
+  return str;
+}
+function locale(){ return lang === 'pt' ? 'pt-BR' : 'en-US'; }
+
+function applyStaticI18n(){
+  document.documentElement.lang = lang === 'pt' ? 'pt-BR' : 'en';
+  document.title = t('pageTitle');
+  document.querySelectorAll('[data-i18n]').forEach(function(el){ el.textContent = t(el.dataset.i18n); });
+  document.querySelectorAll('[data-i18n-title]').forEach(function(el){ el.title = t(el.dataset.i18nTitle); });
+  document.querySelectorAll('[data-i18n-placeholder]').forEach(function(el){ el.placeholder = t(el.dataset.i18nPlaceholder); });
+  document.querySelectorAll('[data-i18n-aria]').forEach(function(el){ el.setAttribute('aria-label', t(el.dataset.i18nAria)); });
+  const vlog = document.getElementById('validate-log');
+  if (vlog) vlog.dataset.emptyMsg = t('validateLogEmpty');
+  const efeed = document.getElementById('event-feed');
+  if (efeed) efeed.dataset.emptyMsg = t('eventsWaiting');
+  document.querySelectorAll('.lang-btn').forEach(function(btn){
+    btn.classList.toggle('active', btn.dataset.lang === lang);
+  });
+  // Sidebar toggle reflects whichever state it's currently in
+  const sb = document.getElementById('sidebar-toggle');
+  if (sb) {
+    const hidden = layoutEl().classList.contains('sidebar-hidden');
+    sb.querySelector('.icon').textContent = hidden ? '◀' : '⚙';
+    document.getElementById('sidebar-toggle-label').textContent = hidden ? t('sidebarShowLabel') : t('sidebarHideLabel');
+    sb.title = hidden ? t('sidebarShowTitle') : t('sidebarHideTitle');
+    sb.setAttribute('aria-label', hidden ? t('sidebarShowAria') : t('sidebarHideAria'));
+  }
+}
+function layoutEl(){ return document.getElementById('layout'); }
+
+function setLang(next){
+  if (next !== 'pt' && next !== 'en') return;
+  lang = next;
+  localStorage.setItem(LANG_KEY, lang);
+  applyStaticI18n();
+  updateModeDesc();
+  renderProxyTable();
+  renderSpectrum();
+}
+document.querySelectorAll('.lang-btn').forEach(function(btn){
+  btn.addEventListener('click', function(){ setLang(btn.dataset.lang); });
+});
 
 let proxyData = [];
 let proxyDataFiltered = [];
@@ -495,9 +890,9 @@ if (sidebarToggle) sidebarToggle.addEventListener('click', function(){
   const hidden = layout.classList.toggle('sidebar-hidden');
   sidebarToggle.classList.toggle('active', hidden);
   sidebarToggle.querySelector('.icon').textContent = hidden ? '◀' : '⚙';
-  document.getElementById('sidebar-toggle-label').textContent = hidden ? 'Mostrar' : 'Esconder';
-  sidebarToggle.setAttribute('aria-label', hidden ? 'Mostrar painel de configuração' : 'Esconder painel de configuração');
-  sidebarToggle.title = hidden ? 'Mostrar configurações' : 'Esconder configurações';
+  document.getElementById('sidebar-toggle-label').textContent = hidden ? t('sidebarShowLabel') : t('sidebarHideLabel');
+  sidebarToggle.setAttribute('aria-label', hidden ? t('sidebarShowAria') : t('sidebarHideAria'));
+  sidebarToggle.title = hidden ? t('sidebarShowTitle') : t('sidebarHideTitle');
   localStorage.setItem('rotator:sidebar', hidden ? 'hidden' : 'visible');
 });
 // Restore sidebar state
@@ -505,15 +900,12 @@ if (sidebarToggle) sidebarToggle.addEventListener('click', function(){
   const state = localStorage.getItem('rotator:sidebar');
   if (state === 'hidden') {
     layout.classList.add('sidebar-hidden');
-    if (sidebarToggle) {
-      sidebarToggle.classList.add('active');
-      sidebarToggle.querySelector('.icon').textContent = '◀';
-      document.getElementById('sidebar-toggle-label').textContent = 'Mostrar';
-      sidebarToggle.title = 'Mostrar configurações';
-      sidebarToggle.setAttribute('aria-label', 'Mostrar painel de configuração');
-    }
+    if (sidebarToggle) sidebarToggle.classList.add('active');
   }
 })();
+
+// Apply translations once the static state above (sidebar visibility) is known
+applyStaticI18n();
 
 function toast(msg, ms){
   const el = document.getElementById('toast');
@@ -525,7 +917,7 @@ function toast(msg, ms){
 
 function fmtClock(){
   const el = document.getElementById('live-clock');
-  if (el) el.textContent = new Date().toLocaleTimeString('pt-BR');
+  if (el) el.textContent = new Date().toLocaleTimeString(locale());
 }
 setInterval(fmtClock, 1000);
 fmtClock();
@@ -538,7 +930,7 @@ function log(text, cls){
   row.className = 'log-line' + (cls ? ' ' + cls : '');
   const time = document.createElement('span');
   time.className = 'log-time';
-  time.textContent = new Date().toLocaleTimeString('pt-BR');
+  time.textContent = new Date().toLocaleTimeString(locale());
   const txt = document.createElement('span');
   txt.className = 'log-text';
   txt.textContent = text;
@@ -550,7 +942,7 @@ function log(text, cls){
 }
 
 document.getElementById('btn-clear-logs').addEventListener('click', function(){
-  document.getElementById('log').innerHTML = '<div class="log-empty">Log limpo.</div>';
+  document.getElementById('log').innerHTML = '<div class="log-empty">' + esc(t('logCleared')) + '</div>';
 });
 document.getElementById('proxy-filter').addEventListener('input', function(e){
   filterTerm = e.target.value.toLowerCase().trim();
@@ -559,8 +951,8 @@ document.getElementById('proxy-filter').addEventListener('input', function(e){
 document.getElementById('btn-copy-all').addEventListener('click', function(){
   const txt = proxyDataFiltered.map(function(p){ return p.proxy; }).join('\n');
   navigator.clipboard.writeText(txt).then(function(){
-    toast('Copiados ' + proxyDataFiltered.length + ' proxies');
-  }).catch(function(){ toast('Não foi possível copiar'); });
+    toast(t('copiedCount', { n: proxyDataFiltered.length }));
+  }).catch(function(){ toast(t('copyFail')); });
 });
 window.addEventListener('keydown', function(e){
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
@@ -604,12 +996,12 @@ function updateProgress(){
     if (total === 0) {
       fill.style.width = '30%';
       fill.classList.add('indet');
-      if (status) status.textContent = 'Preparando…';
+      if (status) status.textContent = t('preparing');
     } else {
       fill.classList.remove('indet');
       const pct = Math.min(100, Math.round((done / Math.max(total, 1)) * 100));
       fill.style.width = pct + '%';
-      if (status) status.textContent = valCounters.ok + ' válidos, ' + valCounters.fail + ' inválidos — ' + done + ' de ' + total;
+      if (status) status.textContent = t('progressStatus', { ok: valCounters.ok, fail: valCounters.fail, done: done, total: total });
     }
   } else {
     fill.classList.remove('indet');
@@ -627,7 +1019,9 @@ function classify(p, now){
   if (p.latency !== 9999 && p.latency > timeout * 0.55) return 'warn';
   return 'ok';
 }
-const STATUS_LABEL = { ok: 'saudável', warn: 'lento', err: 'erro', ban: 'banido' };
+function statusLabel(status){
+  return { ok: t('statusOk'), warn: t('statusWarn'), err: t('statusErr'), ban: t('statusBan') }[status];
+}
 const STATUS_BADGE_CLASS = { ok: 'badge-ok', warn: 'badge-warn', err: 'badge-err', ban: 'badge-ban' };
 
 async function refreshStats(){
@@ -636,7 +1030,7 @@ async function refreshStats(){
     proxyData = d.top || [];
     document.getElementById('stat-total').textContent = d.total ?? proxyData.length;
     document.getElementById('stat-total-sub').textContent =
-      (d.total ?? 0) > proxyData.length ? ('amostra: ' + proxyData.length + ' de ' + d.total) : 'todos visíveis';
+      (d.total ?? 0) > proxyData.length ? t('sampleOf', { n: proxyData.length, total: d.total }) : t('allVisible');
     const now = Date.now();
     const bannedInSample = proxyData.filter(function(p){ return p.banned || now < p.bannedUntil; }).length;
     document.getElementById('stat-sample-banned').textContent = bannedInSample;
@@ -647,7 +1041,7 @@ async function refreshStats(){
     targetsEl.textContent = Array.isArray(d.targets) ? (d.targets.join(', ') || '—') : (d.targets || '—');
     const note = document.getElementById('table-note');
     note.textContent = (d.total ?? 0) > proxyData.length
-      ? ('Mostrando os ' + proxyData.length + ' proxies com melhor score, de ' + d.total + ' no total.')
+      ? t('sampleShowing', { n: proxyData.length, total: d.total })
       : '';
 
     const withLatency = proxyData.filter(function(p){ return p.latency !== 9999; });
@@ -662,7 +1056,7 @@ async function refreshStats(){
     renderSpectrum();
     renderTrend();
   } catch (e) {
-    log('Erro ao buscar estatísticas: ' + e.message, 'fail');
+    log(t('errStatsFetch', { msg: e.message }), 'fail');
   }
 }
 
@@ -716,7 +1110,7 @@ function buildRow(p, now){
   const tdStatus = document.createElement('td');
   const badge = document.createElement('span');
   badge.className = 'badge ' + STATUS_BADGE_CLASS[status];
-  badge.textContent = STATUS_LABEL[status];
+  badge.textContent = statusLabel(status);
   tdStatus.appendChild(badge);
   tr.appendChild(tdStatus);
 
@@ -730,12 +1124,31 @@ function buildRow(p, now){
   const copyBtn = document.createElement('button');
   copyBtn.className = 'icon-btn';
   copyBtn.textContent = '⧉';
-  copyBtn.title = 'Copiar';
-  copyBtn.setAttribute('aria-label', 'Copiar ' + p.proxy);
+  copyBtn.title = t('copyBtnTitle');
+  copyBtn.setAttribute('aria-label', t('copyBtnAria', { proxy: p.proxy }));
   copyBtn.addEventListener('click', function(){
-    navigator.clipboard.writeText(p.proxy).then(function(){ toast('Copiado'); }).catch(function(){});
+    navigator.clipboard.writeText(p.proxy).then(function(){ toast(t('copiedGeneric')); }).catch(function(){});
   });
-  cell.appendChild(addr); cell.appendChild(copyBtn);
+  const delBtn = document.createElement('button');
+  delBtn.className = 'icon-btn danger';
+  delBtn.textContent = '✕';
+  delBtn.title = t('delBtnTitle');
+  delBtn.setAttribute('aria-label', t('delBtnAria', { proxy: p.proxy }));
+  delBtn.addEventListener('click', async function(){
+    if (!confirm(t('delConfirm', { proxy: p.proxy }))) return;
+    delBtn.disabled = true;
+    try {
+      await fetchJSON('/api/proxy?key=' + encodeURIComponent(p.proxy), { method: 'DELETE' });
+      proxyData = proxyData.filter(function(x){ return x.proxy !== p.proxy; });
+      renderProxyTable();
+      renderSpectrum();
+      toast(t('delSuccessToast'));
+    } catch (e) {
+      delBtn.disabled = false;
+      toast(t('delErrorToast', { msg: e.message }));
+    }
+  });
+  cell.appendChild(addr); cell.appendChild(copyBtn); cell.appendChild(delBtn);
   tdProxy.appendChild(cell);
 
 
@@ -779,8 +1192,8 @@ function renderProxyTable(){
     var td = document.createElement('td');
     td.colSpan = 7;
     td.className = 'empty-row';
-    var msg = filterTerm ? ('Nenhum proxy para "' + filterTerm + '"') : 'Pool vazio — rode uma validação para popular.';
-    if (filterTerm && statusFilter.size > 0) msg = 'Nenhum proxy corresponde aos filtros.';
+    var msg = filterTerm ? t('emptyNoMatch', { term: filterTerm }) : t('emptyPoolEmpty');
+    if (filterTerm && statusFilter.size > 0) msg = t('emptyFilters');
     td.textContent = msg;
     tr.appendChild(td);
     tbody.appendChild(tr);
@@ -803,14 +1216,14 @@ function renderProxyTable(){
   });
 
   var countEl = document.getElementById('pool-count');
-  countEl.textContent = proxyData.length ? ('· ' + filtered.length + ' de ' + proxyData.length) : '';
+  countEl.textContent = proxyData.length ? ('· ' + filtered.length + ' / ' + proxyData.length) : '';
 }
 
 // Sortable column headers
 function updateSortIndicators(){
-  document.querySelectorAll('th[data-sort]').forEach(function(t){
-    if (t.dataset.sort === sortKey) t.setAttribute('aria-sort', sortDir === 'asc' ? 'ascending' : 'descending');
-    else t.setAttribute('aria-sort', 'none');
+  document.querySelectorAll('th[data-sort]').forEach(function(th){
+    if (th.dataset.sort === sortKey) th.setAttribute('aria-sort', sortDir === 'asc' ? 'ascending' : 'descending');
+    else th.setAttribute('aria-sort', 'none');
   });
 }
 document.querySelectorAll('th[data-sort]').forEach(function(th){
@@ -831,7 +1244,7 @@ updateSortIndicators();
 function renderSpectrum(){
   const el = document.getElementById('spectrum');
   if (!proxyData.length) {
-    el.innerHTML = '<div class="spectrum-empty">Sem dados ainda — valide o arquivo de proxies para popular a amostra.</div>';
+    el.innerHTML = '<div class="spectrum-empty">' + esc(t('spectrumEmpty')) + '</div>';
     return;
   }
   const now = Date.now();
@@ -848,7 +1261,7 @@ function renderSpectrum(){
     if (status === 'ban' || p.score === Infinity) heightPct = 8;
     else heightPct = Math.max(10, 100 - Math.round((p.score / (maxScore || 1)) * 90));
     bar.style.height = heightPct + '%';
-    bar.title = p.proxy + ' — ' + STATUS_LABEL[status] + (p.latency !== 9999 ? (', ' + p.latency + 'ms') : '');
+    bar.title = p.proxy + ' — ' + statusLabel(status) + (p.latency !== 9999 ? (', ' + p.latency + 'ms') : '');
     frag.appendChild(bar);
   });
   el.appendChild(frag);
@@ -908,16 +1321,16 @@ function addSSEListeners(ev){
     } catch {}
   });
   ev.addEventListener('validation:stopping', function(){
-    log('Parando validação — encerrando processos…', 'info');
+    log(t('stoppingValidationLog'), 'info');
   });
   ev.addEventListener('validation:complete', function(e){
     try {
       const d = JSON.parse(e.data);
       stopValidationUI();
-      if (d.stopped) log('Validação interrompida pelo usuário', 'info');
-      else if (d.error) log('Erro na validação: ' + d.error, 'fail');
-      else log('Validação concluída: ' + d.passed + ' válidos, ' + d.failed + ' inválidos (código ' + d.exitCode + ')', d.exitCode === 0 ? 'ok' : 'fail');
-      toast(d.stopped ? 'Validação parada' : ('Validação: ' + d.passed + ' ok / ' + d.failed + ' falhas'));
+      if (d.stopped) log(t('validationStoppedLog'), 'info');
+      else if (d.error) log(t('validationErrLog', { msg: d.error }), 'fail');
+      else log(t('validationDoneLog', { ok: d.passed, fail: d.failed, code: d.exitCode }), d.exitCode === 0 ? 'ok' : 'fail');
+      toast(d.stopped ? t('validationStoppedToast') : t('validationDoneToast', { ok: d.passed, fail: d.failed }));
       refreshStats();
     } catch {}
   });
@@ -927,9 +1340,9 @@ function connectSSE(){
   const ev = new EventSource('/events');
   const dot = document.getElementById('sse-dot'), txt = document.getElementById('sse-text');
   ev.addEventListener('connected', function(){
-    log('Conectado — atualizações em tempo real ativas');
+    log(t('connectedLog'));
     if (dot) dot.className = 'dot live';
-    if (txt) txt.textContent = 'tempo real ativo';
+    if (txt) txt.textContent = t('liveActive');
     syncValidationStatus();
   });
   ev.addEventListener('health:update', function(){
@@ -941,9 +1354,9 @@ function connectSSE(){
   addSSEListeners(ev);
   addEventFeedSSE(ev);
   ev.onerror = function(){
-    log('Conexão perdida — tentando reconectar em 3s…', 'fail');
+    log(t('connLostLog'), 'fail');
     if (dot) dot.className = 'dot down';
-    if (txt) txt.textContent = 'reconectando…';
+    if (txt) txt.textContent = t('reconnecting');
     setTimeout(connectSSE, 3000);
   };
 }
@@ -975,7 +1388,7 @@ function renderEventLine(e) {
   const time = document.createElement('span');
   time.className = 'evt-time';
   const d = new Date(e.ts);
-  time.textContent = d.toLocaleTimeString('pt-BR');
+  time.textContent = d.toLocaleTimeString(locale());
   line.appendChild(time);
 
   // Type badge
@@ -1002,8 +1415,8 @@ function renderEventLine(e) {
   // Status
   const status = document.createElement('span');
   status.className = 'evt-status ' + e.status;
-  const statusLabel = { success: 'OK', failure: 'FAIL', attempt: 'TENT', info: 'INFO' };
-  status.textContent = statusLabel[e.status] || e.status;
+  const statusLabelMap = { success: t('evtStatusOk'), failure: t('evtStatusFail'), attempt: t('evtStatusAttempt'), info: t('evtStatusInfo') };
+  status.textContent = statusLabelMap[e.status] || e.status;
   line.appendChild(status);
 
   // Error / detail
@@ -1058,7 +1471,7 @@ document.getElementById('evt-filter')?.addEventListener('change', function(e) {
 
 // Clear button
 document.getElementById('btn-clear-events')?.addEventListener('click', function() {
-  document.getElementById('event-feed').innerHTML = '<div class="log-empty">Eventos limpos.</div>';
+  document.getElementById('event-feed').innerHTML = '<div class="log-empty">' + esc(t('eventsCleared')) + '</div>';
   eventFilter = '';
   const sel = document.getElementById('evt-filter');
   if (sel) sel.value = '';
@@ -1071,7 +1484,7 @@ function startValidationUI(){
   document.getElementById('vstat-ok').textContent = '0';
   document.getElementById('vstat-fail').textContent = '0';
   const btn = document.getElementById('btn-validate');
-  btn.disabled = true; btn.textContent = 'Validando…';
+  btn.disabled = true; btn.textContent = t('validateBtnRunning');
   document.getElementById('btn-stop-validate').style.display = 'inline-flex';
   document.getElementById('running-chip').style.display = 'inline-flex';
   document.getElementById('validate-log').innerHTML = '';
@@ -1080,7 +1493,7 @@ function startValidationUI(){
 function stopValidationUI(){
   isValidating = false;
   const btn = document.getElementById('btn-validate');
-  btn.disabled = false; btn.textContent = 'Validar agora';
+  btn.disabled = false; btn.textContent = t('validateBtn');
   document.getElementById('btn-stop-validate').style.display = 'none';
   document.getElementById('running-chip').style.display = 'none';
   document.getElementById('val-status').textContent = '';
@@ -1095,17 +1508,18 @@ async function syncValidationStatus(){
       stopValidationUI();
     }
   } catch(e) {
-    log('Falha ao sincronizar estado da validação: ' + e.message, 'fail');
+    log(t('errSyncStatus', { msg: e.message }), 'fail');
   }
  }
 
 function updateModeDesc(){
   const mode = document.getElementById('cfg-val-mode').value;
   const map = {
-    quick: 'Testa apenas TCP + /ip. O mais rápido, ideal para listas grandes de proxies gratuitos — nunca falha por causa de buffering de streaming.',
-    standard: 'TCP + /ip + 5 chunks de streaming (tolerante). Usa 100% de tolerância de TTFB por padrão para não reprovar proxies com buffering. Recomendado para testar streaming real.',
-    strict: 'quick + streaming de 5 chunks + POST + streaming de 20 chunks. Mais rigoroso — vai reprovar boa parte dos proxies gratuitos.',
-    stream: 'Testa apenas streaming. Use com uma Stream URL própria para validar contra seu backend real (SSE, APIs de IA, etc).'
+    'tcp-only': t('modeDescTcpOnly'),
+    quick: t('modeDescQuick'),
+    standard: t('modeDescStandard'),
+    strict: t('modeDescStrict'),
+    stream: t('modeDescStream'),
   };
   document.getElementById('val-mode-desc').textContent = map[mode] || '';
   document.getElementById('val-mode-pill').textContent = mode;
@@ -1122,40 +1536,39 @@ document.getElementById('btn-validate').addEventListener('click', async function
       maxLatency: parseInt(document.getElementById('cfg-val-maxlat').value, 10),
       connectTimeout: parseInt(document.getElementById('cfg-val-conntimeout').value, 10),
       throttle: parseInt(document.getElementById('cfg-val-throttle').value, 10),
-      ttfbRatio: parseInt(document.getElementById('cfg-val-ttfb').value, 10) || 100,
       prune: document.getElementById('cfg-val-prune').checked,
       anonCheck: document.getElementById('cfg-val-anon').checked,
       insecure: document.getElementById('cfg-val-insecure').checked,
     };
     const result = await fetchJSON('/api/validate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(custom) });
-    log('Validação iniciada — job #' + result.jobId + ', modo ' + result.mode + ', ' + result.threads + ' threads', 'info');
-    toast('Validação #' + result.jobId + ' iniciada');
+    log(t('validationStarted', { id: result.jobId, mode: result.mode, threads: result.threads }), 'info');
+    toast(t('validationStartedToast', { id: result.jobId }));
   } catch (e) {
-    log('Erro ao iniciar validação: ' + e.message, 'fail');
-    toast('Erro ao iniciar validação');
+    log(t('validationStartErr', { msg: e.message }), 'fail');
+    toast(t('validationStartErrToast'));
     stopValidationUI();
   }
 });
 
 document.getElementById('btn-stop-validate').addEventListener('click', async function(){
   const btn = document.getElementById('btn-stop-validate');
-  btn.disabled = true; btn.textContent = 'Parando…';
+  btn.disabled = true; btn.textContent = t('stopBtnStopping');
   try {
     await fetchJSON('/api/validate/stop', { method: 'POST' });
-    log('Parada solicitada — encerrando processos…', 'info');
-    toast('Parando — deve levar menos de 2s');
+    log(t('stopRequested'), 'info');
+    toast(t('stopRequestedToast'));
   } catch (e) {
-    log('Erro ao parar: ' + e.message, 'fail');
-    toast('Erro ao parar');
+    log(t('stopErr', { msg: e.message }), 'fail');
+    toast(t('stopErrToast'));
   }
-  setTimeout(function(){ btn.disabled = false; btn.textContent = 'Parar'; }, 2000);
+  setTimeout(function(){ btn.disabled = false; btn.textContent = t('stopBtn'); }, 2000);
 });
 
 document.getElementById('cfg-save').addEventListener('click', async function(){
   const btn = document.getElementById('cfg-save');
   btn.disabled = true;
   const msg = document.getElementById('cfg-msg');
-  msg.textContent = 'Salvando…'; msg.style.color = 'var(--ink-faint)';
+  msg.textContent = t('savingConfig'); msg.style.color = 'var(--ink-faint)';
   try {
     const targets = document.getElementById('cfg-targets').value.split('\n').map(function(s){ return s.trim(); }).filter(Boolean);
     const body = {
@@ -1177,11 +1590,11 @@ document.getElementById('cfg-save').addEventListener('click', async function(){
     };
     const updated = await fetchJSON('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     Object.assign(CFG, updated);
-    msg.textContent = 'Configuração salva.'; msg.style.color = 'var(--ok)';
-    toast('Configuração salva');
+    msg.textContent = t('configSaved'); msg.style.color = 'var(--ok)';
+    toast(t('configSavedToast'));
   } catch (e) {
-    msg.textContent = 'Erro: ' + e.message; msg.style.color = 'var(--err)';
-    toast('Erro ao salvar configuração');
+    msg.textContent = t('configErr', { msg: e.message }); msg.style.color = 'var(--err)';
+    toast(t('configErrToast'));
   }
   btn.disabled = false;
 });
@@ -1209,7 +1622,7 @@ async function loadConfig(){
     document.getElementById('cfg-val-insecure').checked = !!cfg.validationInsecure;
     updateModeDesc();
   } catch (e) {
-    log('Erro ao carregar configuração: ' + e.message, 'fail');
+    log(t('errLoadConfig', { msg: e.message }), 'fail');
   }
 }
 
