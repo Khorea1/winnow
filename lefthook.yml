@@ -1,0 +1,11 @@
+# lefthook.yml — git hooks for winnow
+# Runs Biome formatter + linter on staged files before commit.
+# Install: npx lefthook install
+
+pre-commit:
+  parallel: true
+  commands:
+    format:
+      glob: "**/*.{ts,tsx,js,jsx,json,md}"
+      run: npx biome check --write --no-errors-on-unmatched --staged {staged_files}
+      stage_fixed: true

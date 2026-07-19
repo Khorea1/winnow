@@ -9,21 +9,31 @@
     "clean": "rm -rf dist",
     "start": "node dist/index.js",
     "validator": "node dist/validator/index.js",
-    "dev": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
     "test": "tsx --test src/__tests__/*.test.ts",
-    "pretest": "npm run clean && npm run build"
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src/",
+    "lint:fix": "biome check --write src/",
+    "format": "biome format --write src/",
+    "check": "biome check src/ && tsc --noEmit && tsx --test src/__tests__/*.test.ts"
+  },
+  "engines": {
+    "node": ">=22"
   },
   "dependencies": {
     "better-sqlite3": "^12.11.1"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.4",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.7.4",
+    "lefthook": "^2.1.10",
     "tsx": "^4.19.1",
     "typescript": "^5.6.3"
   },
   "allowScripts": {
     "esbuild@0.28.1": true,
-    "better-sqlite3@12.11.1": true
+    "better-sqlite3@12.11.1": true,
+    "lefthook@2.1.10": true
   }
 }
