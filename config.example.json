@@ -1,0 +1,32 @@
+{
+  "port": 8080,
+  "proxyFile": "proxies.txt",
+  "targets": [
+    "httpbin.org:80",
+    "example.com:443"
+  ],
+  "retries": 5,
+  "maxErrors": 3,
+  "timeout": 3500,
+  "validationThreads": 20,
+  "validationMode": "quick",
+  "validationBaseUrl": "http://httpbin.org",
+  "validationMaxLatency": 7000,
+  "validationConnectTimeout": 4,
+  "validationThrottle": 100,
+  "validationTtfbRatio": 100,
+  "validationAnonCheck": false,
+  "validationInsecure": false,
+  "validationStrictTLS": false,
+  "validationPrune": true,
+  "validationMaxGap": 5000,
+  "validationTlsHost": "www.google.com",
+  "validationTlsPort": 443,
+  "maxFatalErrors": 3,
+  "fatalBanMs": 300000,
+  "banBaseMs": 30000,
+  "banMultiplier": 2,
+  "banMaxMs": 180000,
+  "pruneAfterMs": 86400000,
+  "upstreamIdleTimeout": 0
+}
