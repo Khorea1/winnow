@@ -11,3 +11,4 @@ test-proxy.*
 config.json
 .env
 .env.*
+RULES.md

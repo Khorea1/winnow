@@ -67,8 +67,7 @@ export function httpConnect(upstream: ParsedProxy, tHost: string, tPort: number,
     const ph = u.hostname
     const pp = parseInt(u.port) || 8080
     const user = u.username
-    const pass = u.password
-    // FIX: evita nested template literal que quebra tsc - usa concatenacao
+    // Uses string concatenation instead of a nested template literal, which broke tsc.
     let auth = ''
     if (user) {
       const token = Buffer.from(user + ':' + pass).toString('base64')

@@ -7,6 +7,7 @@ import { resolveDataDir, updateConfig, type RotatorConfig } from '../config'
 import { createValidationRun, finishValidationRun } from '../db'
 import { buildOptionsFromConfig } from '../validator'
 import { runValidation } from '../validator/runner'
+import { parseLine } from '../proxy/dial'
 import { HealthStore } from '../health'
 import { EventLog } from '../events'
 
@@ -205,6 +206,61 @@ export function registerDashboard(server: http.Server, ctx: { config: { current:
           respondJson(res, updated)
         } catch (e: any) {
           res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: e.message }))
+        }
+        return
+      }
+
+      if (pathname === '/api/proxy' && req.method === 'DELETE') {
+        const key = urlObj.searchParams.get('key')
+        if (!key) {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: 'Missing key parameter' }))
+          return
+        }
+        const proxyFile = cfgRef.current.proxyFile
+        if (!isSafeProxyFile(proxyFile, resolveDataDir())) {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: 'Unsafe proxyFile' }))
+          return
+        }
+        try {
+          let removedFromFile = false
+          if (fs.existsSync(proxyFile)) {
+            const lines = fs.readFileSync(proxyFile, 'utf8').split('\n')
+            const kept = lines.filter((line) => {
+              const parsed = parseLine(line)
+              if (!parsed) return true // keep comments/blank/unparsable lines untouched
+              if (sanitizeProxyKey(parsed.raw) === key) {
+                removedFromFile = true
+                return false
+              }
+              return true
+            })
+            if (removedFromFile) {
+              const dir = path.dirname(path.resolve(proxyFile))
+              const tmpFile = path.join(dir, `.${path.basename(proxyFile)}.tmp-${Date.now()}`)
+              fs.writeFileSync(tmpFile, kept.join('\n'), 'utf8')
+              fs.renameSync(tmpFile, proxyFile)
+            }
+          }
+          let removedFromHealth = false
+          for (const [raw] of health.entries()) {
+            if (sanitizeProxyKey(raw) === key) {
+              health.delete(raw)
+              removedFromHealth = true
+            }
+          }
+          if (!removedFromFile && !removedFromHealth) {
+            res.writeHead(404, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ error: 'Proxy not found' }))
+            return
+          }
+          EventLog.safePush(eventLog, { type: 'pool', proxy: key, target: '', status: 'info', detail: 'removed via dashboard' })
+          broadcast(sseClients, 'proxy:removed', { key })
+          respondJson(res, { removed: true, key, removedFromFile, removedFromHealth })
+        } catch (e: any) {
+          res.writeHead(500, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ error: e.message }))
         }
         return

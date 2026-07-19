@@ -111,14 +111,16 @@ npm run dev
 | Path | Method | Description |
 |---|---|---|
 | `/dashboard` | GET | Web UI dashboard |
-| `/_/stats` | GET | JSON stats summary |
-| `/_/proxies` | GET | Per-proxy health data |
-| `/_/events` | GET | Recent event log (SSE) |
-| `/_/proxy/<key>` | DELETE | Remove a proxy |
-| `/_/validate` | POST | Start validation run |
-| `/_/validate/events` | GET | Validation progress (SSE) |
-| `/_/validate/cancel` | POST | Cancel running validation |
-| `/_/config` | GET/PATCH | Read or hot-reload config |
+| `/__stats` | GET | JSON stats summary + top proxies by score |
+| `/api/config` | GET | Read current config |
+| `/api/config` | POST | Hot-reload config |
+| `/api/proxy?key=<key>` | DELETE | Remove a proxy (rewrites the proxy file + clears its health record) |
+| `/api/events/log?limit=<n>` | GET | Recent event log (JSON) |
+| `/events` | GET | Live event stream (SSE): `health:update`, `proxy:event`, `proxy:removed`, `validation:*` |
+| `/api/validate` | GET | Recent validation runs |
+| `/api/validate` | POST | Start validation run |
+| `/api/validate/status` | GET | Whether a validation run is currently in progress |
+| `/api/validate/stop` | POST | Cancel the running validation |
 
 ### Authentication
 
