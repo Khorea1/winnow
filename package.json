@@ -30,7 +30,7 @@
     "@types/node": "^22.7.4",
     "lefthook": "^2.1.10",
     "tsx": "^4.19.1",
-    "typescript": "^5.6.3"
+    "typescript": "^7.0.2"
   },
   "allowScripts": {
     "esbuild@0.28.1": true,
