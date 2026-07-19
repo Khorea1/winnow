@@ -1,4 +1,5 @@
-import Database, { type Database as DatabaseType, type Statement } from 'better-sqlite3'
+import Database, { type Database as DatabaseType, type Statement } from 'better-sqlite3';
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS proxy_health (
   proxy  TEXT NOT NULL,
@@ -21,46 +22,46 @@ CREATE TABLE IF NOT EXISTS validation_runs (
   failed    INTEGER NOT NULL DEFAULT 0,
   exit_code INTEGER
 );
-`
+`;
 
 export type HealthRow = {
-  proxy: string
-  target: string
-  errors: number
-  successes: number
-  latency: number
-  banned_until: number
-  last_ok: number
-  fatal_errors: number
-  frozen_until: number
-}
+  proxy: string;
+  target: string;
+  errors: number;
+  successes: number;
+  latency: number;
+  banned_until: number;
+  last_ok: number;
+  fatal_errors: number;
+  frozen_until: number;
+};
 
 export function initDb(dbPath: string) {
-  const db = new Database(dbPath)
+  const db = new Database(dbPath);
 
   // Create tables (new databases only — IF NOT EXISTS means existing ones are untouched)
-  db.exec(SCHEMA)
+  db.exec(SCHEMA);
 
   // Migration: add frozen_until to proxy_health (v4.0.0)
   try {
-    db.exec('ALTER TABLE proxy_health ADD COLUMN frozen_until INTEGER NOT NULL DEFAULT 0')
+    db.exec('ALTER TABLE proxy_health ADD COLUMN frozen_until INTEGER NOT NULL DEFAULT 0');
   } catch {
     // column already exists — noop
   }
 
-  db.pragma('journal_mode = WAL')
-  return db
+  db.pragma('journal_mode = WAL');
+  return db;
 }
 interface StmtCache {
-  upsertHealth: Statement<unknown[]>
-  deleteHealth: Statement<[string]>
-  loadAll: Statement<unknown[], HealthRow>
-  insertRun: Statement<[number]>
-  finishRun: Statement<[number, number, number, number, number, number]>
+  upsertHealth: Statement<unknown[]>;
+  deleteHealth: Statement<[string]>;
+  loadAll: Statement<unknown[], HealthRow>;
+  insertRun: Statement<[number]>;
+  finishRun: Statement<[number, number, number, number, number, number]>;
 }
-const stmtCache = new WeakMap<DatabaseType, StmtCache>()
+const stmtCache = new WeakMap<DatabaseType, StmtCache>();
 function getStmts(db: DatabaseType): StmtCache {
-  let s = stmtCache.get(db)
+  let s = stmtCache.get(db);
   if (!s) {
     s = {
       upsertHealth: db.prepare(`
@@ -79,32 +80,32 @@ function getStmts(db: DatabaseType): StmtCache {
       loadAll: db.prepare('SELECT * FROM proxy_health'),
       insertRun: db.prepare('INSERT INTO validation_runs (started) VALUES (?)'),
       finishRun: db.prepare('UPDATE validation_runs SET finished = ?, total = ?, passed = ?, failed = ?, exit_code = ? WHERE id = ?'),
-    }
-    stmtCache.set(db, s)
+    };
+    stmtCache.set(db, s);
   }
-  return s
+  return s;
 }
 
 export function insertHealth(db: DatabaseType, rows: Record<string, unknown>[]) {
   const tx = db.transaction((rows: Record<string, unknown>[]) => {
-    const { upsertHealth } = getStmts(db)
-    for (const r of rows) upsertHealth.run(r)
-  })
-  tx(rows)
+    const { upsertHealth } = getStmts(db);
+    for (const r of rows) upsertHealth.run(r);
+  });
+  tx(rows);
 }
 
 export function loadHealth(db: DatabaseType): HealthRow[] {
-  return getStmts(db).loadAll.all()
+  return getStmts(db).loadAll.all();
 }
 
 export function removeProxyHealth(db: DatabaseType, proxy: string) {
-  getStmts(db).deleteHealth.run(proxy)
+  getStmts(db).deleteHealth.run(proxy);
 }
 
 export function createValidationRun(db: DatabaseType) {
-  return getStmts(db).insertRun.run(Date.now()).lastInsertRowid as number
+  return getStmts(db).insertRun.run(Date.now()).lastInsertRowid as number;
 }
 
 export function finishValidationRun(db: DatabaseType, id: number, total: number, passed: number, failed: number, exitCode: number) {
-  getStmts(db).finishRun.run(Date.now(), total, passed, failed, exitCode, id)
+  getStmts(db).finishRun.run(Date.now(), total, passed, failed, exitCode, id);
 }

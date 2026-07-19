@@ -1,33 +1,40 @@
-import { parseLine, dial } from '../../proxy/dial'
-import { tlsHandshake, isSelfSignedError } from '../../proxy/tls'
+import { dial, parseLine } from '../../proxy/dial.js';
+import { isSelfSignedError, tlsHandshake } from '../../proxy/tls.js';
 
 export interface TlsCheckResult {
-  authorized: boolean
-  error?: string
-  selfSigned: boolean
-  protocol?: string
+  authorized: boolean;
+  error?: string;
+  selfSigned: boolean;
+  protocol?: string;
 }
 
-export async function tlsCheck(proxyRaw: string, targetHost: string, targetPort: number, opts: {
-  connectTimeout: number
-  insecure: boolean
-  strictTLS: boolean
-}): Promise<TlsCheckResult> {
-  const parsedProxy = parseLine(proxyRaw)
-  if (!parsedProxy) throw new Error('invalid format')
+export async function tlsCheck(
+  proxyRaw: string,
+  targetHost: string,
+  targetPort: number,
+  opts: {
+    connectTimeout: number;
+    insecure: boolean;
+    strictTLS: boolean;
+  },
+): Promise<TlsCheckResult> {
+  const parsedProxy = parseLine(proxyRaw);
+  if (!parsedProxy) throw new Error('invalid format');
 
-  const { sock } = await dial(parsedProxy, targetHost, targetPort, opts.connectTimeout * 1000)
+  const { sock } = await dial(parsedProxy, targetHost, targetPort, opts.connectTimeout * 1000);
 
   try {
-    const res = await tlsHandshake(sock, targetHost, { insecure: opts.insecure, timeout: opts.connectTimeout * 1000 })
-    try { sock.destroy() } catch {}
+    const res = await tlsHandshake(sock, targetHost, { insecure: opts.insecure, timeout: opts.connectTimeout * 1000 });
+    try {
+      sock.destroy();
+    } catch {}
 
-    const selfSigned = isSelfSignedError(res)
+    const selfSigned = isSelfSignedError(res);
 
     if (opts.strictTLS && !res.authorized) {
-      const err: any = new Error('TLS invalid/self-signed: ' + (res.authorizationError || 'unauthorized'))
-      err.tlsResult = res
-      throw err
+      const err: any = new Error(`TLS invalid/self-signed: ${res.authorizationError || 'unauthorized'}`);
+      err.tlsResult = res;
+      throw err;
     }
 
     return {
@@ -35,9 +42,11 @@ export async function tlsCheck(proxyRaw: string, targetHost: string, targetPort:
       error: res.authorizationError,
       selfSigned,
       protocol: res.protocol,
-    }
+    };
   } catch (e: any) {
-    try { sock.destroy() } catch {}
-    throw e
+    try {
+      sock.destroy();
+    } catch {}
+    throw e;
   }
 }

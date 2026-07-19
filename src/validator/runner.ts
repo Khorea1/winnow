@@ -1,182 +1,180 @@
-import { tcpCheck, parseProxyForTcp } from './checks/tcp'
-import { httpCheck } from './checks/http'
-import { tlsCheck } from './checks/tls'
-import { streamingCheck } from './checks/streaming'
-import { ValidatorOptions, ProxyResult, ProgressCallback } from './types'
+import { httpCheck } from './checks/http.js';
+import { streamingCheck } from './checks/streaming.js';
+import { parseProxyForTcp, tcpCheck } from './checks/tcp.js';
+import { tlsCheck } from './checks/tls.js';
+import type { ProgressCallback, ProxyResult, ValidatorOptions } from './types.js';
 
 /** Build a failure result consistently across all validation stages. */
 function fail(proxy: string, stage: string, error: string, extra?: Partial<ProxyResult>): ProxyResult {
-  return { proxy, valid: false, error, stage, ...extra }
+  return { proxy, valid: false, error, stage, ...extra };
 }
 
 export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptions, abortSignal?: AbortSignal): Promise<ProxyResult> {
-  const trimmed = proxyRaw.trim()
+  const trimmed = proxyRaw.trim();
   if (!trimmed || trimmed.startsWith('#')) {
-    return fail(proxyRaw, 'parse', 'empty line')
+    return fail(proxyRaw, 'parse', 'empty line');
   }
 
   // Stage TCP
-  const tcpInfo = parseProxyForTcp(trimmed)
+  const tcpInfo = parseProxyForTcp(trimmed);
   if (!tcpInfo) {
-    return fail(trimmed, 'parse', 'invalid format')
+    return fail(trimmed, 'parse', 'invalid format');
   }
 
   try {
-    await tcpCheck(tcpInfo.host, tcpInfo.port, opts.connectTimeout * 1000)
+    await tcpCheck(tcpInfo.host, tcpInfo.port, opts.connectTimeout * 1000);
   } catch {
-    return fail(trimmed, 'tcp', 'TCP unreachable', { httpCode: 0 })
+    return fail(trimmed, 'tcp', 'TCP unreachable', { httpCode: 0 });
   }
 
-  if (abortSignal?.aborted) return fail(trimmed, 'cancelled', 'aborted')
+  if (abortSignal?.aborted) return fail(trimmed, 'cancelled', 'aborted');
 
   // Stage A - HTTP /ip
   if (opts.mode !== 'tcp-only') {
     try {
-      const target = opts.baseUrl.replace(/\/$/, '') + '/ip'
+      const target = `${opts.baseUrl.replace(/\/$/, '')}/ip`;
       const res = await httpCheck(trimmed, target, {
         connectTimeout: opts.connectTimeout,
         maxLatency: opts.maxLatency,
         insecure: opts.insecure,
         strictTLS: opts.strictTLS,
         anonCheck: opts.anonCheck,
-      })
+      });
 
       if (res.status !== 200 && res.status !== 0) {
-        return fail(trimmed, 'http', `HTTP ${res.status}`, { httpCode: res.status, latency: res.latency })
+        return fail(trimmed, 'http', `HTTP ${res.status}`, { httpCode: res.status, latency: res.latency });
       }
 
       if (res.latency > opts.maxLatency) {
-        return fail(trimmed, 'http', `latency ${res.latency}ms > ${opts.maxLatency}ms`, { httpCode: res.status, latency: res.latency })
+        return fail(trimmed, 'http', `latency ${res.latency}ms > ${opts.maxLatency}ms`, { httpCode: res.status, latency: res.latency });
       }
 
-      // Invalid content - expecting JSON with origin
-      if (!res.body.includes('origin') && res.body.length < 5) {
-        if (res.body.length < 2) {
-          return fail(trimmed, 'http', 'invalid content', { httpCode: res.status, latency: res.latency })
-        }
+      // Invalid content - expecting JSON with origin from httpbin /ip
+      if (!res.body.includes('origin')) {
+        return fail(trimmed, 'http', 'invalid content', { httpCode: res.status, latency: res.latency });
       }
     } catch (e: any) {
-      const msg = e.message || 'HTTP error'
+      const msg = e.message || 'HTTP error';
       if (msg.includes('transparent')) {
-        return fail(trimmed, 'http', 'transparent proxy')
+        return fail(trimmed, 'http', 'transparent proxy');
       }
       if (msg.includes('TLS invalid') || msg.includes('self-signed')) {
-        return fail(trimmed, 'tls', msg)
+        return fail(trimmed, 'tls', msg);
       }
-      return fail(trimmed, 'http', msg)
+      return fail(trimmed, 'http', msg);
     }
   }
-  if (abortSignal?.aborted) return fail(trimmed, 'cancelled', 'aborted')
+  if (abortSignal?.aborted) return fail(trimmed, 'cancelled', 'aborted');
 
   // Stage TLS explicit - check self-signed if strictTLS=true
   if (opts.strictTLS) {
     try {
-      const tlsHost = opts.tlsHost || 'www.google.com'
-      const tlsPort = opts.tlsPort || 443
+      const tlsHost = opts.tlsHost || 'www.google.com';
+      const tlsPort = opts.tlsPort || 443;
       const tlsRes = await tlsCheck(trimmed, tlsHost, tlsPort, {
         connectTimeout: opts.connectTimeout,
         insecure: false,
         strictTLS: true,
-      })
+      });
       if (!tlsRes.authorized) {
-        return fail(trimmed, 'tls', `TLS invalid: ${tlsRes.error}`)
+        return fail(trimmed, 'tls', `TLS invalid: ${tlsRes.error}`);
       }
     } catch (e: any) {
-      const msg = e.message || 'TLS failed'
+      const msg = e.message || 'TLS failed';
       if (msg.includes('TLS invalid') || msg.includes('self-signed') || msg.includes('certificate')) {
-        return fail(trimmed, 'tls', msg)
+        return fail(trimmed, 'tls', msg);
       }
     }
   }
 
-  if (abortSignal?.aborted) return fail(trimmed, 'cancelled', 'aborted')
+  if (abortSignal?.aborted) return fail(trimmed, 'cancelled', 'aborted');
 
   // Stage B - light streaming
   if (opts.mode === 'standard' || opts.mode === 'strict') {
     try {
-      const streamUrl = opts.baseUrl.replace(/\/$/, '') + '/stream/5?delay=0.2'
+      const streamUrl = `${opts.baseUrl.replace(/\/$/, '')}/stream/5?delay=0.2`;
       const res = await streamingCheck(trimmed, streamUrl, {
         connectTimeout: opts.connectTimeout,
         maxTime: 25,
         expectedChunks: 5,
         ttfbRatio: opts.ttfbRatio,
         maxGap: opts.maxGap,
-      })
-      const minChunks = Math.max(1, Math.floor(5 * 0.5))
+      });
+      const minChunks = Math.max(1, Math.floor(5 * 0.5));
       if (res.chunks < minChunks) {
-        return fail(trimmed, 'stream', `insufficient chunks ${res.chunks}/5`, { chunks: res.chunks, ttfb: res.ttfb })
+        return fail(trimmed, 'stream', `insufficient chunks ${res.chunks}/5`, { chunks: res.chunks, ttfb: res.ttfb });
       }
     } catch (e: any) {
-      return fail(trimmed, 'stream', e.message || 'stream failed')
+      return fail(trimmed, 'stream', e.message || 'stream failed');
     }
   }
 
-  if (abortSignal?.aborted) return fail(trimmed, 'cancelled', 'aborted')
+  if (abortSignal?.aborted) return fail(trimmed, 'cancelled', 'aborted');
 
   // Stage D - streaming 20 + POST para strict
   if (opts.mode === 'strict') {
     try {
-      const stream20Url = opts.baseUrl.replace(/\/$/, '') + '/stream/20?delay=0.1'
+      const stream20Url = `${opts.baseUrl.replace(/\/$/, '')}/stream/20?delay=0.1`;
       const res = await streamingCheck(trimmed, stream20Url, {
         connectTimeout: opts.connectTimeout,
         maxTime: 35,
         expectedChunks: 20,
         ttfbRatio: opts.ttfbRatio,
         maxGap: opts.maxGap,
-      })
+      });
       if (res.chunks < 10) {
-        return fail(trimmed, 'stream20', `insufficient chunks ${res.chunks}/20`, { chunks: res.chunks })
+        return fail(trimmed, 'stream20', `insufficient chunks ${res.chunks}/20`, { chunks: res.chunks });
       }
     } catch (e: any) {
-      return fail(trimmed, 'stream20', e.message || 'stream20 failed')
+      return fail(trimmed, 'stream20', e.message || 'stream20 failed');
     }
   }
 
-  return { proxy: trimmed, valid: true, stage: 'ok' }
+  return { proxy: trimmed, valid: true, stage: 'ok' };
 }
 
 export async function runValidation(
   proxyList: string[],
   opts: ValidatorOptions,
   onProgress?: ProgressCallback,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
 ): Promise<{ valid: string[]; invalid: { proxy: string; reason: string }[]; results: ProxyResult[] }> {
-  const valid: string[] = []
-  const invalid: { proxy: string; reason: string }[] = []
-  const results: ProxyResult[] = []
-  const total = proxyList.length
-  let done = 0
+  const valid: string[] = [];
+  const invalid: { proxy: string; reason: string }[] = [];
+  const results: ProxyResult[] = [];
+  const total = proxyList.length;
+  let done = 0;
 
   // Flat worker pool: each worker pulls from a shared queue
-  const queue = [...proxyList]
-  const workerCount = Math.min(opts.threads, queue.length)
+  const queue = [...proxyList];
+  const workerCount = Math.min(opts.threads, queue.length);
 
   async function worker() {
     while (queue.length > 0 && !abortSignal?.aborted) {
-      const proxy = queue.shift()!
+      const proxy = queue.shift()!;
 
       if (opts.throttle > 0) {
-        await new Promise(r => setTimeout(r, Math.floor(Math.random() * (opts.throttle + 1))))
+        await new Promise((r) => setTimeout(r, Math.floor(Math.random() * (opts.throttle + 1))));
       }
-      if (abortSignal?.aborted) break
+      if (abortSignal?.aborted) break;
 
       try {
-        const res = await validateSingleProxy(proxy, opts, abortSignal)
-        results.push(res)
-        if (res.valid) valid.push(res.proxy)
-        else invalid.push({ proxy: res.proxy, reason: res.error || 'error' })
-        done++
-        onProgress?.(res, { total, done, valid: valid.length, invalid: invalid.length })
+        const res = await validateSingleProxy(proxy, opts, abortSignal);
+        results.push(res);
+        if (res.valid) valid.push(res.proxy);
+        else invalid.push({ proxy: res.proxy, reason: res.error || 'error' });
+        done++;
+        onProgress?.(res, { total, done, valid: valid.length, invalid: invalid.length });
       } catch (e: any) {
-        const r: ProxyResult = { proxy, valid: false, error: e.message || 'error', stage: 'unknown' }
-        results.push(r)
-        invalid.push({ proxy, reason: r.error! })
-        done++
-        onProgress?.(r, { total, done, valid: valid.length, invalid: invalid.length })
+        const r: ProxyResult = { proxy, valid: false, error: e.message || 'error', stage: 'unknown' };
+        results.push(r);
+        invalid.push({ proxy, reason: r.error! });
+        done++;
+        onProgress?.(r, { total, done, valid: valid.length, invalid: invalid.length });
       }
     }
   }
 
-  await Promise.all(Array.from({ length: workerCount }, () => worker()))
-  return { valid, invalid, results }
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return { valid, invalid, results };
 }

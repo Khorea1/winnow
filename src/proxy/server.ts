@@ -1,330 +1,428 @@
-import http from 'http'
-import net from 'net'
-import { HealthStore } from '../health'
-import { classifyError } from '../health'
-import { RotatorConfig } from '../config'
-import { ParsedProxy, parseHostPort, dial, isBlockedTarget } from './dial'
-import { tryWithRetry } from './rotator'
-import { EventLog } from '../events'
+import http from 'node:http';
+import type net from 'node:net';
+import type { RotatorConfig } from '../config/index.js';
+import { EventLog } from '../events.js';
+import { classifyError, type HealthStore } from '../health/index.js';
+import { isBlockedTarget, type ParsedProxy, parseHostPort } from './dial.js';
+import { tryWithRetry } from './rotator.js';
 
 // Hop-by-hop headers that MUST NOT be forwarded by an HTTP proxy (RFC 2616 §13.5.1).
-const HOP_BY_HOP = new Set(['connection','keep-alive','proxy-authenticate','proxy-authorization','te','trailer','transfer-encoding','upgrade','proxy-connection'])
+const HOP_BY_HOP = new Set([
+  'connection',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
+  'proxy-connection',
+]);
 
 // ── Upstream timeout helpers ──────────────────────────────────────────────
 // TTFB + idle timeout for single-socket upstream or bi-directional CONNECT.
-function startSocketTimeout(
-  sockets: net.Socket[],
-  ttfbMs: number,
-  idleMs: number,
-  onTimeout: () => void,
-): () => void {
+function startSocketTimeout(sockets: net.Socket[], ttfbMs: number, idleMs: number, onTimeout: () => void): () => void {
   let ttfbTimer: NodeJS.Timeout | null = setTimeout(() => {
-    const t = idleTimer
-    ttfbTimer = null
-    idleTimer = null
-    if (t) clearTimeout(t)
-    onTimeout()
-  }, ttfbMs)
-  let idleTimer: NodeJS.Timeout | null = null
+    const t = idleTimer;
+    ttfbTimer = null;
+    idleTimer = null;
+    if (t) clearTimeout(t);
+    onTimeout();
+  }, ttfbMs);
+  let idleTimer: NodeJS.Timeout | null = null;
 
   function onData() {
     if (ttfbTimer) {
-      clearTimeout(ttfbTimer)
-      ttfbTimer = null
-      idleTimer = setTimeout(onTimeout, idleMs)
+      clearTimeout(ttfbTimer);
+      ttfbTimer = null;
+      idleTimer = setTimeout(onTimeout, idleMs);
     } else if (idleTimer) {
-      clearTimeout(idleTimer)
-      idleTimer = setTimeout(onTimeout, idleMs)
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(onTimeout, idleMs);
     }
   }
 
-  for (const s of sockets) s.on('data', onData)
+  for (const s of sockets) s.on('data', onData);
 
   return function cancel() {
-    if (ttfbTimer) { clearTimeout(ttfbTimer); ttfbTimer = null }
-    if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
-    for (const s of sockets) s.off('data', onData)
-  }
+    if (ttfbTimer) {
+      clearTimeout(ttfbTimer);
+      ttfbTimer = null;
+    }
+    if (idleTimer) {
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+    for (const s of sockets) s.off('data', onData);
+  };
 }
 export interface ProxyServerCtx {
-  config: { current: RotatorConfig }
-  health: HealthStore
-  getProxies: () => ParsedProxy[]
-  onRequestMetrics?: (info: { proxy: string; target: string; success: boolean; latency: number; bytes: number }) => void
-  eventLog?: EventLog
+  config: { current: RotatorConfig };
+  health: HealthStore;
+  getProxies: () => ParsedProxy[];
+  onRequestMetrics?: (info: { proxy: string; target: string; success: boolean; latency: number; bytes: number }) => void;
+  eventLog?: EventLog;
 }
 
 export function createProxyServer(ctx: ProxyServerCtx): http.Server {
-  const config = ctx.config.current
-  const server = http.createServer()
+  const config = ctx.config.current;
+  const server = http.createServer();
   // Idle connection timeout — prevents resource leaks from clients that connect
   // and never send a request. Tunnels (CONNECT) are unaffected since pipe takes over.
-  server.timeout = Math.max(config.timeout, 5000)
-  server.keepAliveTimeout = Math.min(server.timeout, 30000)
+  server.timeout = Math.max(config.timeout, 5000);
+  server.keepAliveTimeout = Math.min(server.timeout, 30000);
   // --- CONNECT (HTTPS) ---
   server.on('connect', async (req, clientSock: net.Socket, head: Buffer) => {
-    const parsed = parseHostPort(req.url || '', 443)
+    const parsed = parseHostPort(req.url || '', 443);
     if (!parsed) {
-      try { clientSock.write('HTTP/1.1 400 Bad Request\r\n\r\n') } catch {}
-      clientSock.end()
-      return
+      try {
+        clientSock.write('HTTP/1.1 400 Bad Request\r\n\r\n');
+      } catch {}
+      clientSock.end();
+      return;
     }
-    const { host: tHost, port: tPort } = parsed
+    const { host: tHost, port: tPort } = parsed;
     if (isBlockedTarget(tHost)) {
-      try { clientSock.write('HTTP/1.1 403 Forbidden\r\n\r\n') } catch {}
-      clientSock.end()
-      return
+      try {
+        clientSock.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+      } catch {}
+      clientSock.end();
+      return;
     }
-    const targetKey = `${tHost}:${tPort}`
-    const config = ctx.config.current
-    const proxies = ctx.getProxies()
-    const el = ctx.eventLog
-    let cancelTimeout: (() => void) | undefined
+    const targetKey = `${tHost}:${tPort}`;
+    const config = ctx.config.current;
+    const proxies = ctx.getProxies();
+    const el = ctx.eventLog;
+    let cancelTimeout: (() => void) | undefined;
 
     try {
-      const { sock: upSock, head: upHead, upstream, latency: dialLatency } = await tryWithRetry(proxies, ctx.health, config, tHost, tPort, targetKey, el)
+      const { sock: upSock, head: upHead, upstream, latency: dialLatency } = await tryWithRetry(proxies, ctx.health, config, tHost, tPort, targetKey, el);
 
       // LOG: connect success
-      EventLog.safePush(el, { type: 'connect', proxy: upstream.raw, target: targetKey, status: 'success', latency: dialLatency })
+      EventLog.safePush(el, { type: 'connect', proxy: upstream.raw, target: targetKey, status: 'success', latency: dialLatency });
 
       // Track real usage
-      let bytesUp = 0
-      let bytesDown = 0
-      let failed = false
-      let closedEarly = false
-      const start = Date.now()
+      let bytesUp = 0;
+      let bytesDown = 0;
+      let failed = false;
+      let _closedEarly = false;
+      const start = Date.now();
 
       try {
-        clientSock.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+        clientSock.write('HTTP/1.1 200 Connection Established\r\n\r\n');
       } catch {
-        try { upSock.destroy() } catch {}
-        return
+        try {
+          upSock.destroy();
+        } catch {}
+        return;
       }
 
       if (head?.length) {
-        upSock.write(head)
-        bytesUp += head.length
+        upSock.write(head);
+        bytesUp += head.length;
       }
       if (upHead?.length) {
-        clientSock.write(upHead)
-        bytesDown += upHead.length
+        clientSock.write(upHead);
+        bytesDown += upHead.length;
       }
 
       // Pipe with byte counting
-      const onUpData = (chunk: Buffer) => { bytesDown += chunk.length }
-      const onClientData = (chunk: Buffer) => { bytesUp += chunk.length }
-      upSock.on('data', onUpData)
-      clientSock.on('data', onClientData)
+      const onUpData = (chunk: Buffer) => {
+        bytesDown += chunk.length;
+      };
+      const onClientData = (chunk: Buffer) => {
+        bytesUp += chunk.length;
+      };
+      upSock.on('data', onUpData);
+      clientSock.on('data', onClientData);
 
-      upSock.pipe(clientSock)
-      clientSock.pipe(upSock)
+      upSock.pipe(clientSock);
+      clientSock.pipe(upSock);
       // Timeout: TTFB on first data, idle after
       cancelTimeout = startSocketTimeout([upSock, clientSock], config.timeout, config.upstreamIdleTimeout || config.timeout * 2, () => {
-        if (failed) return
-        failed = true
-        ctx.health.recordFailure(upstream.raw, targetKey, { message: 'tunnel timeout' }, config)
-        try { upSock.destroy(); clientSock.destroy() } catch {}
-      })
+        if (failed) return;
+        failed = true;
+        ctx.health.recordFailure(upstream.raw, targetKey, { message: 'tunnel timeout' }, config);
+        try {
+          upSock.destroy();
+          clientSock.destroy();
+        } catch {}
+      });
 
       const markFailure = (err?: any) => {
-        if (failed) return
-        failed = true
-        ctx.health.recordFailure(upstream.raw, targetKey, err || { message: 'proxy error' }, config)
+        if (failed) return;
+        failed = true;
+        ctx.health.recordFailure(upstream.raw, targetKey, err || { message: 'proxy error' }, config);
         // LOG: connect failure
-        EventLog.safePush(el, { type: 'connect', proxy: upstream.raw, target: targetKey, status: 'failure', error: err?.message || 'proxy error', errorCode: err?.code, errorClass: classifyError(err) })
-      }
+        EventLog.safePush(el, {
+          type: 'connect',
+          proxy: upstream.raw,
+          target: targetKey,
+          status: 'failure',
+          error: err?.message || 'proxy error',
+          errorCode: err?.code,
+          errorClass: classifyError(err),
+        });
+      };
 
       const markSuccess = () => {
-        if (failed) return
-        failed = true
-        const totalBytes = bytesUp + bytesDown
-        const totalLatency = Date.now() - start
+        if (failed) return;
+        failed = true;
+        const totalBytes = bytesUp + bytesDown;
+        const totalLatency = Date.now() - start;
         if (totalBytes > 0 || totalLatency > 1000) {
-          ctx.health.recordSuccess(upstream.raw, targetKey, dialLatency, start)
-          ctx.onRequestMetrics?.({ proxy: upstream.raw, target: targetKey, success: true, latency: totalLatency, bytes: totalBytes })
+          ctx.health.recordSuccess(upstream.raw, targetKey, dialLatency, start);
+          ctx.onRequestMetrics?.({ proxy: upstream.raw, target: targetKey, success: true, latency: totalLatency, bytes: totalBytes });
         }
-      }
+      };
 
-      clientSock.on('error', () => { /* client error does not penalize proxy */ })
+      clientSock.on('error', () => {
+        /* client error does not penalize proxy */
+      });
 
       upSock.on('close', () => {
-        cancelTimeout?.()
-        const elapsed = Date.now() - start
+        cancelTimeout?.();
+        const elapsed = Date.now() - start;
         // If closed too fast without data, it's a real failure
         if (elapsed < 500 && bytesDown === 0 && bytesUp < 100) {
-          closedEarly = true
+          _closedEarly = true;
           // LOG: early close
-          EventLog.safePush(el, { type: 'connect', proxy: upstream.raw, target: targetKey, status: 'failure', error: 'early close', errorClass: 'transient' })
-          markFailure(new Error('early close'))
+          EventLog.safePush(el, { type: 'connect', proxy: upstream.raw, target: targetKey, status: 'failure', error: 'early close', errorClass: 'transient' });
+          markFailure(new Error('early close'));
         } else {
-          markSuccess()
+          markSuccess();
         }
-        try { clientSock.end() } catch {}
-      })
+        try {
+          clientSock.end();
+        } catch {}
+      });
       clientSock.on('close', () => {
-        cancelTimeout?.()
+        cancelTimeout?.();
         // Only mark success if upstream data arrived; otherwise let upstream close handler decide
-        if (bytesDown > 0) markSuccess()
-        try { upSock.end() } catch {}
-      })
-
+        if (bytesDown > 0) markSuccess();
+        try {
+          upSock.end();
+        } catch {}
+      });
     } catch (e: any) {
-      cancelTimeout?.()
+      cancelTimeout?.();
       // LOG: all retries failed for connect
-      EventLog.safePush(el, { type: 'connect', proxy: '(all)', target: targetKey, status: 'failure', error: e?.message || 'all retries failed', errorCode: e?.code })
-      try { clientSock.write('HTTP/1.1 502 Bad Gateway\r\n\r\n') } catch {}
-      clientSock.end()
+      EventLog.safePush(el, {
+        type: 'connect',
+        proxy: '(all)',
+        target: targetKey,
+        status: 'failure',
+        error: e?.message || 'all retries failed',
+        errorCode: e?.code,
+      });
+      try {
+        clientSock.write('HTTP/1.1 502 Bad Gateway\r\n\r\n');
+      } catch {}
+      clientSock.end();
     }
-  })
+  });
 
   // --- HTTP Proxy (GET http://host/path) ---
   server.on('request', async (req: any, res: any) => {
-
     // HTTP proxy forwarding real
-    let cancelTimeout: (() => void) | undefined
-    const el = ctx.eventLog
-    let targetKey = ''
+    let cancelTimeout: (() => void) | undefined;
+    const el = ctx.eventLog;
+    let targetKey = '';
     try {
-      let targetUrl: URL
+      let targetUrl: URL;
       try {
-        targetUrl = new URL(req.url)
+        targetUrl = new URL(req.url);
       } catch {
         // req.url may be path only, use Host header
-        const host = req.headers.host
+        const host = req.headers.host;
         if (!host) {
-          res.writeHead(400); res.end('Bad Request'); return
+          res.writeHead(400);
+          res.end('Bad Request');
+          return;
         }
-        targetUrl = new URL('http://' + host + req.url)
+        targetUrl = new URL(`http://${host}${req.url}`);
       }
 
-      const tHost = targetUrl.hostname
-      const tPort = parseInt(targetUrl.port) || (targetUrl.protocol === 'https:' ? 443 : 80)
+      const tHost = targetUrl.hostname;
+      const tPort = parseInt(targetUrl.port, 10) || (targetUrl.protocol === 'https:' ? 443 : 80);
       if (isBlockedTarget(tHost)) {
-        res.writeHead(403, { 'Content-Type': 'text/plain' })
-        res.end('Forbidden')
-        return
+        res.writeHead(403, { 'Content-Type': 'text/plain' });
+        res.end('Forbidden');
+        return;
       }
-      targetKey = `${tHost}:${tPort}`
-      const config = ctx.config.current
-      const proxies = ctx.getProxies()
-      const { sock: upSock, upstream, latency: dialLatency } = await tryWithRetry(proxies, ctx.health, config, tHost, tPort, targetKey, el)
+      targetKey = `${tHost}:${tPort}`;
+      const config = ctx.config.current;
+      const proxies = ctx.getProxies();
+      const { sock: upSock, upstream, latency: dialLatency } = await tryWithRetry(proxies, ctx.health, config, tHost, tPort, targetKey, el);
 
       // LOG: http success
-      EventLog.safePush(el, { type: 'http', proxy: upstream.raw, target: targetKey, status: 'success', latency: dialLatency })
-      let requestFailed = false
-      let upstreamBytes = 0
-      let requestBodyBytes = 0
-      const startTime = Date.now()
+      EventLog.safePush(el, { type: 'http', proxy: upstream.raw, target: targetKey, status: 'success', latency: dialLatency });
+      let requestFailed = false;
+      let upstreamBytes = 0;
+      let requestBodyBytes = 0;
+      const startTime = Date.now();
       const markHttpFailure = (err?: any) => {
-        if (requestFailed) return
-        requestFailed = true
-        ctx.health.recordFailure(upstream.raw, targetKey, err || { message: 'http proxy error' }, config)
+        if (requestFailed) return;
+        requestFailed = true;
+        ctx.health.recordFailure(upstream.raw, targetKey, err || { message: 'http proxy error' }, config);
         // LOG: http failure
-        EventLog.safePush(el, { type: 'http', proxy: upstream.raw, target: targetKey, status: 'failure', error: err?.message || 'http proxy error', errorCode: err?.code, errorClass: classifyError(err) })
-      }
+        EventLog.safePush(el, {
+          type: 'http',
+          proxy: upstream.raw,
+          target: targetKey,
+          status: 'failure',
+          error: err?.message || 'http proxy error',
+          errorCode: err?.code,
+          errorClass: classifyError(err),
+        });
+      };
 
       // Send request to upstream
-      const pathAndQuery = targetUrl.pathname + targetUrl.search
-      let headers = ''
+      const pathAndQuery = targetUrl.pathname + targetUrl.search;
+      let headers = '';
       for (const [k, v] of Object.entries(req.headers)) {
-        if (HOP_BY_HOP.has(k.toLowerCase())) continue
-        if (Array.isArray(v)) headers += `${k}: ${v.join(', ')}\r\n`
-        else if (v) headers += `${k}: ${v}\r\n`
+        if (HOP_BY_HOP.has(k.toLowerCase())) continue;
+        if (Array.isArray(v)) headers += `${k}: ${v.join(', ')}\r\n`;
+        else if (v) headers += `${k}: ${v}\r\n`;
       }
-      const reqLine = `${req.method} ${pathAndQuery} HTTP/1.1\r\nHost: ${tHost}\r\n${headers}Connection: close\r\n\r\n`
-      upSock.write(reqLine)
+      const reqLine = `${req.method} ${pathAndQuery} HTTP/1.1\r\nHost: ${tHost}\r\n${headers}Connection: close\r\n\r\n`;
+      upSock.write(reqLine);
       cancelTimeout = startSocketTimeout([upSock], config.timeout, config.upstreamIdleTimeout || config.timeout * 2, () => {
-        if (requestFailed) return
-        requestFailed = true
-        ctx.health.recordFailure(upstream.raw, targetKey, { message: 'upstream timeout' }, config)
+        if (requestFailed) return;
+        requestFailed = true;
+        ctx.health.recordFailure(upstream.raw, targetKey, { message: 'upstream timeout' }, config);
         // LOG: upstream timeout
-        EventLog.safePush(el, { type: 'http', proxy: upstream.raw, target: targetKey, status: 'failure', error: 'upstream timeout', errorClass: 'transient' })
-        upSock.destroy()
-        try { res.end() } catch {}
-      })
+        EventLog.safePush(el, { type: 'http', proxy: upstream.raw, target: targetKey, status: 'failure', error: 'upstream timeout', errorClass: 'transient' });
+        upSock.destroy();
+        try {
+          res.end();
+        } catch {}
+      });
 
-      const MAX_BODY_BYTES = 10 * 1024 * 1024   // 10 MB
-      let bodyBytes = 0
+      const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
+      let bodyBytes = 0;
       if (req.method !== 'GET' && req.method !== 'HEAD') {
         req.on('data', (chunk: Buffer) => {
-          requestBodyBytes += chunk.length
-          bodyBytes += chunk.length
+          requestBodyBytes += chunk.length;
+          bodyBytes += chunk.length;
           if (bodyBytes > MAX_BODY_BYTES && !requestFailed) {
-            req.unpipe(upSock)
-            req.destroy()
-            upSock.destroy()
-            requestFailed = true
-            res.writeHead(413, { 'Content-Type': 'text/plain' })
-            res.end('Payload Too Large')
+            req.unpipe(upSock);
+            req.destroy();
+            upSock.destroy();
+            requestFailed = true;
+            res.writeHead(413, { 'Content-Type': 'text/plain' });
+            res.end('Payload Too Large');
           }
-        })
-        req.pipe(upSock)
+        });
+        req.pipe(upSock);
       }
 
-      // Read upstream response and forward
-      let respBuf: Buffer = Buffer.alloc(0)
-      let headerParsed = false
-      let statusCode = 0
+      // Read upstream response and forward — parse headers, filter hop-by-hop, pass to client
+      let respBuf: Buffer = Buffer.alloc(0);
+      let headerParsed = false;
+      let statusCode = 0;
 
       upSock.on('data', (chunk: Buffer) => {
         if (!headerParsed) {
           // Avoid Buffer.concat when headers complete in a single chunk (common case)
-          const combined = respBuf.length > 0 ? Buffer.concat([respBuf, chunk]) : chunk
-          const idx = combined.indexOf('\r\n\r\n')
+          const combined = respBuf.length > 0 ? Buffer.concat([respBuf, chunk]) : chunk;
+          const idx = combined.indexOf('\r\n\r\n');
           if (idx !== -1) {
-            const headerStr = combined.slice(0, idx).toString()
-            const firstLine = headerStr.split('\r\n')[0]
-            statusCode = parseInt(firstLine.split(' ')[1] || '0', 10)
+            const headerStr = combined.slice(0, idx).toString();
+            const lines = headerStr.split('\r\n');
+            const firstLine = lines[0];
+            statusCode = parseInt(firstLine.split(' ')[1] || '0', 10);
             // Penalize 5xx as upstream failure
             if (statusCode >= 500 && !requestFailed) {
-              EventLog.safePush(el, { type: 'http', proxy: upstream.raw, target: targetKey, status: 'failure', error: 'upstream ' + statusCode, errorClass: 'transient' })
-              markHttpFailure(new Error('upstream ' + statusCode))
+              EventLog.safePush(el, {
+                type: 'http',
+                proxy: upstream.raw,
+                target: targetKey,
+                status: 'failure',
+                error: `upstream ${statusCode}`,
+                errorClass: 'transient',
+              });
+              markHttpFailure(new Error(`upstream ${statusCode}`));
             }
-            const rest = combined.slice(idx + 4)
+            // Parse and forward response headers, stripping hop-by-hop
+            const headers: Record<string, string | string[]> = {};
+            for (let i = 1; i < lines.length; i++) {
+              const line = lines[i];
+              const sep = line.indexOf(':');
+              if (sep === -1) continue;
+              const k = line.slice(0, sep).trim();
+              const v = line.slice(sep + 1).trim();
+              if (k && !HOP_BY_HOP.has(k.toLowerCase())) {
+                const existing = headers[k];
+                if (existing !== undefined) {
+                  headers[k] = Array.isArray(existing) ? [...existing, v] : [existing, v];
+                } else {
+                  headers[k] = v;
+                }
+              }
+            }
+            const rest = combined.slice(idx + 4);
             try {
-              res.writeHead(statusCode)
-              res.write(rest)
+              res.writeHead(statusCode, headers);
+              res.write(rest);
             } catch {}
-            upstreamBytes += rest.length
-            headerParsed = true
-            respBuf = Buffer.alloc(0)
+            upstreamBytes += rest.length;
+            headerParsed = true;
+            respBuf = Buffer.alloc(0);
           } else {
-            respBuf = combined
+            respBuf = combined;
           }
         } else {
-          try { res.write(chunk) } catch {}
-          upstreamBytes += chunk.length
+          try {
+            res.write(chunk);
+          } catch {}
+          upstreamBytes += chunk.length;
         }
-      })
-      
+      });
+
       upSock.on('end', () => {
-        cancelTimeout?.()
-        const totalTime = Date.now() - startTime
+        cancelTimeout?.();
+        const totalTime = Date.now() - startTime;
         if (!requestFailed) {
-          ctx.health.recordSuccess(upstream.raw, targetKey, dialLatency, Date.now())
-          ctx.onRequestMetrics?.({ proxy: upstream.raw, target: targetKey, success: true, latency: totalTime, bytes: upstreamBytes + requestBodyBytes })
+          ctx.health.recordSuccess(upstream.raw, targetKey, dialLatency, Date.now());
+          ctx.onRequestMetrics?.({ proxy: upstream.raw, target: targetKey, success: true, latency: totalTime, bytes: upstreamBytes + requestBodyBytes });
         }
-        try { res.end() } catch {}
-      })
+        try {
+          res.end();
+        } catch {}
+      });
 
       upSock.on('error', (err: any) => {
-        cancelTimeout?.()
-        const totalTime = Date.now() - startTime
-        try { res.writeHead(502); res.end('Bad Gateway') } catch {}
+        cancelTimeout?.();
+        const totalTime = Date.now() - startTime;
+        try {
+          res.writeHead(502);
+          res.end('Bad Gateway');
+        } catch {}
         if (!requestFailed) {
-          markHttpFailure(err)
-          ctx.onRequestMetrics?.({ proxy: upstream.raw, target: targetKey, success: false, latency: totalTime, bytes: upstreamBytes + requestBodyBytes })
+          markHttpFailure(err);
+          ctx.onRequestMetrics?.({ proxy: upstream.raw, target: targetKey, success: false, latency: totalTime, bytes: upstreamBytes + requestBodyBytes });
         }
-      })
-      req.on('error', () => { try { upSock.destroy() } catch {} })
-      res.on('close', () => { try { upSock.destroy() } catch {} })
-
+      });
+      req.on('error', () => {
+        try {
+          upSock.destroy();
+        } catch {}
+      });
+      res.on('close', () => {
+        try {
+          upSock.destroy();
+        } catch {}
+      });
     } catch (e: any) {
-      if (cancelTimeout) cancelTimeout()
+      if (cancelTimeout) cancelTimeout();
       // LOG: http all retries failed
-      EventLog.safePush(el, { type: 'http', proxy: '(all)', target: targetKey, status: 'failure', error: e?.message, errorCode: e?.code })
-      try { res.writeHead(502, { 'Content-Type': 'text/plain' }); res.end('Bad Gateway: ' + e.message) } catch {}
+      EventLog.safePush(el, { type: 'http', proxy: '(all)', target: targetKey, status: 'failure', error: e?.message, errorCode: e?.code });
+      try {
+        res.writeHead(502, { 'Content-Type': 'text/plain' });
+        res.end(`Bad Gateway: ${e.message}`);
+      } catch {}
     }
-  })
-  return server
+  });
+  return server;
 }
