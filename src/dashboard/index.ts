@@ -119,7 +119,7 @@ function serveDashboard(res: ServerResponse) {
         _dashboardHtml = '<html><body><h1>Dashboard not found</h1></body></html>'
       }
     }
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'" })
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'" })
     res.end(_dashboardHtml)
   } catch (e: any) {
     res.writeHead(500)

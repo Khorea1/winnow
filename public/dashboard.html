@@ -484,8 +484,10 @@ let latencyHistory = [];
 const MAX_HISTORY = 60;
 let sortKey = 'score', sortDir = 'asc', filterTerm = '';
 let isValidating = false;
-let CFG;
+let CFG = {};
 let statusFilter = new Set();
+let valCounters = { total: 0, ok: 0, fail: 0 };
+let refreshScheduled = false;
 /* ---------- sidebar toggle ---------- */
 const layout = document.getElementById('layout');
 const sidebarToggle = document.getElementById('sidebar-toggle');
