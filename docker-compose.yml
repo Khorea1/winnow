@@ -1,0 +1,38 @@
+# docker-compose.yml — example deployment with persistent volume
+# Usage:
+#   docker compose up -d --build
+#   docker compose logs -f
+
+volumes:
+  rotator-data:
+    # Named volume; replace with a bind mount for easier file editing:
+    # driver: local
+    # driver_opts:
+    #   type: none
+    #   device: ./data
+    #   o: bind
+
+services:
+  rotator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - rotator-data:/srv/data
+      # Optional: bind your proxy file directly:
+      # - ./scrapped.txt:/srv/data/scrapped.txt:ro
+    environment:
+      - WINNOW_DATA_DIR=/srv/data
+      - WINNOW_CONFIG=/srv/data/config.json
+      - WINNOW_PORT=8080
+      # You can also override proxy file at runtime:
+      # - WINNOW_PROXY_FILE=/srv/data/scrapped.txt
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:8080/__stats',r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>process.exit(d.includes('total')?0:1))}).on('error',()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

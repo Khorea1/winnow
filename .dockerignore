@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.git/
+*.log
+*.tmp
+*.db
+*.db-shm
+*.db-wal
+*.txt
+__pycache__/
+src/scrapped.txt
+Dockerfile
+docker-compose.yml

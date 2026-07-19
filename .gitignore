@@ -1,0 +1,13 @@
+node_modules/
+.serena/
+dist/
+*.db
+*.db-shm
+*.db-wal
+*.log
+scrapped.txt
+nope.db
+test-proxy.*
+config.json
+.env
+.env.*
