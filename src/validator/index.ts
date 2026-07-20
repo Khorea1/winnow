@@ -1,7 +1,10 @@
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { createLogger } from '../logger.js';
 import { runValidation } from './runner.js';
-import type { ValidatorOptions } from './types.js';
+import type { ProgressCallback, ValidatorOptions } from './types.js';
+
+const logger = createLogger('validator');
 
 export interface CliOptions extends Partial<ValidatorOptions> {
   output?: string;
@@ -43,7 +46,7 @@ export function buildOptionsFromConfig(config: ValidationConfigFragment, overrid
   };
 }
 
-export async function validateFile(filePath: string, opts: ValidatorOptions, onProgress?: any, abortSignal?: AbortSignal) {
+export async function validateFile(filePath: string, opts: ValidatorOptions, onProgress?: ProgressCallback, abortSignal?: AbortSignal) {
   if (!fs.existsSync(filePath)) throw new Error(`File not found: ${filePath}`);
   const content = fs.readFileSync(filePath, 'utf8');
   const proxies = content
@@ -55,10 +58,6 @@ export async function validateFile(filePath: string, opts: ValidatorOptions, onP
   const uniq = Array.from(new Set(proxies));
 
   const result = await runValidation(uniq, opts, onProgress, abortSignal);
-
-  if (opts && (opts as any).output) {
-    // output handled by caller
-  }
 
   return {
     total: uniq.length,
@@ -73,7 +72,7 @@ export async function cliMain() {
   const args = process.argv.slice(2);
   let proxyFile = '';
   let threads = 20;
-  let mode: any = 'quick';
+  let mode: ValidatorOptions['mode'] = 'quick';
   let baseUrl = 'http://httpbin.org';
   let output = '';
   let jsonOutput = '';
@@ -120,7 +119,7 @@ Examples:
       continue;
     }
     if (a === '--mode') {
-      mode = args[++i];
+      mode = args[++i] as ValidatorOptions['mode'];
       continue;
     }
     if (a === '--base-url' || a === '-b') {
@@ -149,7 +148,7 @@ Examples:
   }
 
   if (!proxyFile) {
-    console.error('Usage: validator <file> [--threads 20] [--mode quick|standard|strict|stream] [--json-output out.json]');
+    logger.error({}, 'usage: validator <file> [--threads 20] [--mode quick|standard|strict|stream] [--json-output out.json]');
     process.exit(1);
   }
 
@@ -169,7 +168,7 @@ Examples:
     tlsPort: 443,
   };
 
-  const onProgress = (res: any, _stats: any) => {
+  const onProgress: ProgressCallback = (res, _stats) => {
     if (res.valid) console.log(`[VALID] ${res.proxy}`);
     else console.log(`[INVALID] ${res.proxy} (${res.error})`);
   };
@@ -202,7 +201,7 @@ Examples:
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   cliMain().catch((e) => {
-    console.error(e);
+    logger.error({ error: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined }, 'validator cli error');
     process.exit(1);
   });
 }

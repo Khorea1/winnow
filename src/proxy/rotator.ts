@@ -2,8 +2,11 @@ import type net from 'node:net';
 import type { RotatorConfig } from '../config/index.js';
 import { EventLog } from '../events.js';
 import { classifyError, type HealthStore } from '../health/index.js';
+import { createLogger } from '../logger.js';
 import { dial, type ParsedProxy, parseHostPort } from './dial.js';
 import { tlsHandshake } from './tls.js';
+
+const logger = createLogger('rotator');
 
 export interface PoolOptions {
   config: RotatorConfig;
@@ -32,85 +35,99 @@ export async function tryWithRetry(
   tPort: number,
   _forTarget?: string,
   eventLog?: EventLog,
+  reqId?: string,
 ): Promise<{ sock: net.Socket; head: Buffer; upstream: ParsedProxy; latency: number }> {
   const targetKey = `${tHost}:${tPort}`;
   const isTargetTracked = config.targets.includes(targetKey);
   const candidates = pickMany(proxies, health, config.retries, isTargetTracked ? targetKey : undefined, config.maxErrors + 5);
   if (!candidates.length) {
-    // LOG: no proxies alive
+    logger.warn({ target: targetKey, reqId }, 'no proxies alive');
     EventLog.safePush(eventLog, { type: 'pool', proxy: '(all)', target: targetKey, status: 'failure', error: 'no proxies alive' });
     throw new Error('no proxies alive');
   }
-  let lastErr: any;
+  logger.debug({ target: targetKey, candidates: candidates.length, reqId }, 'starting retry loop');
+  let lastErr: unknown;
   for (const upstream of candidates) {
     const start = Date.now();
     try {
       const { sock, head } = await dial(upstream, tHost, tPort, config.timeout);
       const latency = Date.now() - start;
       health.recordSuccess(upstream.raw, isTargetTracked ? targetKey : undefined, latency, start);
+      logger.info({ proxy: upstream.raw, target: targetKey, latency, reqId }, 'upstream dial succeeded');
       return { sock, head, upstream, latency };
-    } catch (e: any) {
+    } catch (e: unknown) {
       lastErr = e;
-      // LOG: retry attempt
+      const errClass = classifyError(e);
+      const errMsg = e instanceof Error ? e.message : String(e);
+      const errCode = e != null && typeof e === 'object' && 'code' in e ? String((e as Record<string, unknown>).code) : undefined;
+      logger.warn(
+        {
+          proxy: upstream.raw,
+          target: targetKey,
+          error: errMsg,
+          errorClass: errClass,
+          attempt: candidates.indexOf(upstream) + 1,
+          total: candidates.length,
+          reqId,
+        },
+        'retry attempt failed',
+      );
       EventLog.safePush(eventLog, {
         type: 'retry',
         proxy: upstream.raw,
         target: targetKey,
         status: 'attempt',
-        error: e?.message,
-        errorCode: e?.code,
-        errorClass: classifyError(e),
+        error: errMsg,
+        errorCode: errCode,
+        errorClass: errClass,
         detail: `attempt ${candidates.indexOf(upstream) + 1}/${candidates.length}`,
       });
       health.recordFailure(upstream.raw, isTargetTracked ? targetKey : undefined, e, config, Date.now());
     }
   }
-  throw lastErr || new Error('all retries failed');
+  const lastErrMsg = lastErr instanceof Error ? lastErr.message : lastErr ? String(lastErr) : 'unknown';
+  logger.error({ target: targetKey, reqId, error: lastErrMsg }, 'all retries failed');
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
-
 export async function healthCheckTick(proxies: ParsedProxy[], health: HealthStore, config: RotatorConfig, targets: string[], eventLog?: EventLog) {
   if (!targets.length) return;
   const target = targets[Math.floor(Math.random() * targets.length)];
   const parsed = parseHostPort(target, 80);
   if (!parsed) return;
   const toCheck = pickMany(proxies, health, 10, target, config.maxErrors + 10);
+  logger.debug({ target, checkCount: toCheck.length }, 'health check tick');
   await Promise.allSettled(
     toCheck.map(async (p) => {
       const dialStart = Date.now();
-      // LOG: healthcheck attempt
       EventLog.safePush(eventLog, { type: 'healthcheck', proxy: p.raw, target, status: 'attempt' });
       try {
         const { sock } = await dial(p, parsed.host, parsed.port, config.timeout);
-        // If target is TLS (443), handshake to validate cert chain if strictTLS is on
         if (parsed.port === 443) {
           try {
             const tlsRes = await tlsHandshake(sock, parsed.host, { insecure: !config.validationStrictTLS, timeout: config.timeout });
-            // If strictTLS=true and cert is invalid, treat as a failure
             if (config.validationStrictTLS && !tlsRes.authorized) {
               throw new Error(`TLS invalid: ${tlsRes.authorizationError}`);
             }
             sock.destroy();
-          } catch (e: any) {
-            // If handshake fails, mark as a light error
+          } catch (e: unknown) {
             try {
               sock.destroy();
             } catch {}
-            // LOG: healthcheck TLS failure
+            const errMsg = e instanceof Error ? e.message : String(e);
             EventLog.safePush(eventLog, {
               type: 'healthcheck',
               proxy: p.raw,
               target,
               status: 'failure',
-              error: e?.message,
+              error: errMsg,
               errorClass: classifyError(e),
             });
+            logger.warn({ proxy: p.raw, target, error: errMsg, errorClass: classifyError(e) }, 'health check TLS failure');
             throw e;
           }
         } else {
-          // For HTTP, destroy the socket on success
           sock.destroy();
         }
-        // LOG: healthcheck success
         EventLog.safePush(eventLog, {
           type: 'healthcheck',
           proxy: p.raw,
@@ -119,18 +136,21 @@ export async function healthCheckTick(proxies: ParsedProxy[], health: HealthStor
           latency: Date.now() - dialStart,
         });
         health.recordSuccess(p.raw, target, Date.now() - dialStart, dialStart);
-      } catch (e: any) {
-        // LOG: healthcheck failure
+        logger.debug({ proxy: p.raw, target, latency: Date.now() - dialStart }, 'health check success');
+      } catch (e: unknown) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        const errCode = e != null && typeof e === 'object' && 'code' in e ? String((e as Record<string, unknown>).code) : undefined;
         EventLog.safePush(eventLog, {
           type: 'healthcheck',
           proxy: p.raw,
           target,
           status: 'failure',
-          error: e?.message,
-          errorCode: e?.code,
+          error: errMsg,
+          errorCode: errCode,
           errorClass: classifyError(e),
         });
         health.recordFailure(p.raw, target, e, config, Date.now());
+        logger.warn({ proxy: p.raw, target, error: errMsg, errorClass: classifyError(e) }, 'health check failure');
       }
     }),
   );

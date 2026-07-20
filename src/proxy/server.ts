@@ -1,10 +1,18 @@
-import http from 'node:http';
+import crypto from 'node:crypto';
+import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import type net from 'node:net';
 import type { RotatorConfig } from '../config/index.js';
 import { EventLog } from '../events.js';
 import { classifyError, type HealthStore } from '../health/index.js';
+import { createLogger } from '../logger.js';
 import { isBlockedTarget, type ParsedProxy, parseHostPort } from './dial.js';
 import { tryWithRetry } from './rotator.js';
+
+const logger = createLogger('proxy');
+
+function shortId(): string {
+  return crypto.randomUUID().slice(0, 8);
+}
 
 // Hop-by-hop headers that MUST NOT be forwarded by an HTTP proxy (RFC 2616 §13.5.1).
 const HOP_BY_HOP = new Set([
@@ -73,6 +81,7 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
   server.keepAliveTimeout = Math.min(server.timeout, 30000);
   // --- CONNECT (HTTPS) ---
   server.on('connect', async (req, clientSock: net.Socket, head: Buffer) => {
+    const reqId = shortId();
     const parsed = parseHostPort(req.url || '', 443);
     if (!parsed) {
       try {
@@ -96,9 +105,14 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
     let cancelTimeout: (() => void) | undefined;
 
     try {
-      const { sock: upSock, head: upHead, upstream, latency: dialLatency } = await tryWithRetry(proxies, ctx.health, config, tHost, tPort, targetKey, el);
+      const {
+        sock: upSock,
+        head: upHead,
+        upstream,
+        latency: dialLatency,
+      } = await tryWithRetry(proxies, ctx.health, config, tHost, tPort, targetKey, el, reqId);
 
-      // LOG: connect success
+      logger.info({ reqId, proxy: upstream.raw, target: targetKey, latency: dialLatency }, 'connect upstream acquired');
       EventLog.safePush(el, { type: 'connect', proxy: upstream.raw, target: targetKey, status: 'success', latency: dialLatency });
 
       // Track real usage
@@ -142,6 +156,7 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
       cancelTimeout = startSocketTimeout([upSock, clientSock], config.timeout, config.upstreamIdleTimeout || config.timeout * 2, () => {
         if (failed) return;
         failed = true;
+        logger.warn({ reqId, proxy: upstream.raw, target: targetKey }, 'tunnel timeout');
         ctx.health.recordFailure(upstream.raw, targetKey, { message: 'tunnel timeout' }, config);
         try {
           upSock.destroy();
@@ -149,18 +164,20 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
         } catch {}
       });
 
-      const markFailure = (err?: any) => {
+      const markFailure = (err?: unknown) => {
         if (failed) return;
         failed = true;
         ctx.health.recordFailure(upstream.raw, targetKey, err || { message: 'proxy error' }, config);
-        // LOG: connect failure
+        const errMsg = err instanceof Error ? err.message : err ? String(err) : 'proxy error';
+        const errCode = err != null && typeof err === 'object' && 'code' in err ? String((err as Record<string, unknown>).code) : undefined;
+        logger.warn({ reqId, proxy: upstream.raw, target: targetKey, error: errMsg, errorClass: classifyError(err) }, 'connect failure');
         EventLog.safePush(el, {
           type: 'connect',
           proxy: upstream.raw,
           target: targetKey,
           status: 'failure',
-          error: err?.message || 'proxy error',
-          errorCode: err?.code,
+          error: errMsg,
+          errorCode: errCode,
           errorClass: classifyError(err),
         });
       };
@@ -173,6 +190,7 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
         if (totalBytes > 0 || totalLatency > 1000) {
           ctx.health.recordSuccess(upstream.raw, targetKey, dialLatency, start);
           ctx.onRequestMetrics?.({ proxy: upstream.raw, target: targetKey, success: true, latency: totalLatency, bytes: totalBytes });
+          logger.info({ reqId, proxy: upstream.raw, target: targetKey, bytes: totalBytes, latency: totalLatency }, 'tunnel completed');
         }
       };
 
@@ -183,10 +201,8 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
       upSock.on('close', () => {
         cancelTimeout?.();
         const elapsed = Date.now() - start;
-        // If closed too fast without data, it's a real failure
         if (elapsed < 500 && bytesDown === 0 && bytesUp < 100) {
           _closedEarly = true;
-          // LOG: early close
           EventLog.safePush(el, { type: 'connect', proxy: upstream.raw, target: targetKey, status: 'failure', error: 'early close', errorClass: 'transient' });
           markFailure(new Error('early close'));
         } else {
@@ -198,22 +214,23 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
       });
       clientSock.on('close', () => {
         cancelTimeout?.();
-        // Only mark success if upstream data arrived; otherwise let upstream close handler decide
         if (bytesDown > 0) markSuccess();
         try {
           upSock.end();
         } catch {}
       });
-    } catch (e: any) {
+    } catch (e: unknown) {
       cancelTimeout?.();
-      // LOG: all retries failed for connect
+      const errMsg = e instanceof Error ? e.message : String(e);
+      const errCode = e != null && typeof e === 'object' && 'code' in e ? String((e as Record<string, unknown>).code) : undefined;
+      logger.error({ reqId, target: targetKey, error: errMsg }, 'connect all retries failed');
       EventLog.safePush(el, {
         type: 'connect',
         proxy: '(all)',
         target: targetKey,
         status: 'failure',
-        error: e?.message || 'all retries failed',
-        errorCode: e?.code,
+        error: errMsg,
+        errorCode: errCode,
       });
       try {
         clientSock.write('HTTP/1.1 502 Bad Gateway\r\n\r\n');
@@ -223,7 +240,8 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
   });
 
   // --- HTTP Proxy (GET http://host/path) ---
-  server.on('request', async (req: any, res: any) => {
+  server.on('request', async (req: IncomingMessage, res: ServerResponse) => {
+    const reqId = shortId();
     // HTTP proxy forwarding real
     let cancelTimeout: (() => void) | undefined;
     const el = ctx.eventLog;
@@ -231,7 +249,7 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
     try {
       let targetUrl: URL;
       try {
-        targetUrl = new URL(req.url);
+        targetUrl = new URL(req.url ?? '/');
       } catch {
         // req.url may be path only, use Host header
         const host = req.headers.host;
@@ -240,7 +258,7 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
           res.end('Bad Request');
           return;
         }
-        targetUrl = new URL(`http://${host}${req.url}`);
+        targetUrl = new URL(`http://${host}${req.url ?? '/'}`);
       }
 
       const tHost = targetUrl.hostname;
@@ -253,26 +271,28 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
       targetKey = `${tHost}:${tPort}`;
       const config = ctx.config.current;
       const proxies = ctx.getProxies();
-      const { sock: upSock, upstream, latency: dialLatency } = await tryWithRetry(proxies, ctx.health, config, tHost, tPort, targetKey, el);
+      const { sock: upSock, upstream, latency: dialLatency } = await tryWithRetry(proxies, ctx.health, config, tHost, tPort, targetKey, el, reqId);
 
-      // LOG: http success
+      logger.info({ reqId, proxy: upstream.raw, target: targetKey, latency: dialLatency }, 'http upstream acquired');
       EventLog.safePush(el, { type: 'http', proxy: upstream.raw, target: targetKey, status: 'success', latency: dialLatency });
       let requestFailed = false;
       let upstreamBytes = 0;
       let requestBodyBytes = 0;
       const startTime = Date.now();
-      const markHttpFailure = (err?: any) => {
+      const markHttpFailure = (err?: unknown) => {
         if (requestFailed) return;
         requestFailed = true;
         ctx.health.recordFailure(upstream.raw, targetKey, err || { message: 'http proxy error' }, config);
-        // LOG: http failure
+        const errMsg = err instanceof Error ? err.message : err ? String(err) : 'http proxy error';
+        const errCode = err != null && typeof err === 'object' && 'code' in err ? String((err as Record<string, unknown>).code) : undefined;
+        logger.warn({ reqId, proxy: upstream.raw, target: targetKey, error: errMsg, errorClass: classifyError(err) }, 'http failure');
         EventLog.safePush(el, {
           type: 'http',
           proxy: upstream.raw,
           target: targetKey,
           status: 'failure',
-          error: err?.message || 'http proxy error',
-          errorCode: err?.code,
+          error: errMsg,
+          errorCode: errCode,
           errorClass: classifyError(err),
         });
       };
@@ -291,7 +311,7 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
         if (requestFailed) return;
         requestFailed = true;
         ctx.health.recordFailure(upstream.raw, targetKey, { message: 'upstream timeout' }, config);
-        // LOG: upstream timeout
+        logger.warn({ reqId, proxy: upstream.raw, target: targetKey }, 'upstream timeout');
         EventLog.safePush(el, { type: 'http', proxy: upstream.raw, target: targetKey, status: 'failure', error: 'upstream timeout', errorClass: 'transient' });
         upSock.destroy();
         try {
@@ -299,7 +319,7 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
         } catch {}
       });
 
-      const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
+      const MAX_BODY_BYTES = 10 * 1024 * 1024;
       let bodyBytes = 0;
       if (req.method !== 'GET' && req.method !== 'HEAD') {
         req.on('data', (chunk: Buffer) => {
@@ -324,7 +344,6 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
 
       upSock.on('data', (chunk: Buffer) => {
         if (!headerParsed) {
-          // Avoid Buffer.concat when headers complete in a single chunk (common case)
           const combined = respBuf.length > 0 ? Buffer.concat([respBuf, chunk]) : chunk;
           const idx = combined.indexOf('\r\n\r\n');
           if (idx !== -1) {
@@ -332,7 +351,6 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
             const lines = headerStr.split('\r\n');
             const firstLine = lines[0];
             statusCode = parseInt(firstLine.split(' ')[1] || '0', 10);
-            // Penalize 5xx as upstream failure
             if (statusCode >= 500 && !requestFailed) {
               EventLog.safePush(el, {
                 type: 'http',
@@ -344,7 +362,6 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
               });
               markHttpFailure(new Error(`upstream ${statusCode}`));
             }
-            // Parse and forward response headers, stripping hop-by-hop
             const headers: Record<string, string | string[]> = {};
             for (let i = 1; i < lines.length; i++) {
               const line = lines[i];
@@ -386,13 +403,17 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
         if (!requestFailed) {
           ctx.health.recordSuccess(upstream.raw, targetKey, dialLatency, Date.now());
           ctx.onRequestMetrics?.({ proxy: upstream.raw, target: targetKey, success: true, latency: totalTime, bytes: upstreamBytes + requestBodyBytes });
+          logger.info(
+            { reqId, proxy: upstream.raw, target: targetKey, statusCode, bytes: upstreamBytes + requestBodyBytes, latency: totalTime },
+            'http request completed',
+          );
         }
         try {
           res.end();
         } catch {}
       });
 
-      upSock.on('error', (err: any) => {
+      upSock.on('error', (err: Error) => {
         cancelTimeout?.();
         const totalTime = Date.now() - startTime;
         try {
@@ -414,13 +435,15 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
           upSock.destroy();
         } catch {}
       });
-    } catch (e: any) {
+    } catch (e: unknown) {
       if (cancelTimeout) cancelTimeout();
-      // LOG: http all retries failed
-      EventLog.safePush(el, { type: 'http', proxy: '(all)', target: targetKey, status: 'failure', error: e?.message, errorCode: e?.code });
+      const errMsg = e instanceof Error ? e.message : String(e);
+      const errCode = e != null && typeof e === 'object' && 'code' in e ? String((e as Record<string, unknown>).code) : undefined;
+      logger.error({ reqId, target: targetKey, error: errMsg }, 'http all retries failed');
+      EventLog.safePush(el, { type: 'http', proxy: '(all)', target: targetKey, status: 'failure', error: errMsg, errorCode: errCode });
       try {
         res.writeHead(502, { 'Content-Type': 'text/plain' });
-        res.end(`Bad Gateway: ${e.message}`);
+        res.end(`Bad Gateway: ${errMsg}`);
       } catch {}
     }
   });

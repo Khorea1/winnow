@@ -3,6 +3,9 @@ import type Database from 'better-sqlite3';
 
 import { insertHealth, loadHealth, removeProxyHealth } from '../db/index.js';
 import { EventLog } from '../events.js';
+import { createLogger } from '../logger.js';
+
+const logger = createLogger('health');
 
 export interface HealthEntry {
   errors: number;
@@ -236,13 +239,15 @@ export class HealthStore extends EventEmitter {
     }
     // LOG: emit ban/freeze events only on state transitions
     const errorClass = classifyError(err);
+    const errMsg = err instanceof Error ? err.message : String(err);
+    logger.warn({ proxy, target: target || '*', errorClass, error: errMsg }, 'failure recorded');
     if (!wasBanned && star.bannedUntil > now) {
       EventLog.safePush(this._eventLog, {
         type: 'ban',
         proxy,
         target: target || '*',
         status: 'info',
-        error: (err as any)?.message || String(err),
+        error: errMsg,
         errorClass,
         detail: `errors=${star.errors}, fatalErrors=${star.fatalErrors}, bannedUntil=${new Date(star.bannedUntil).toISOString()}`,
       });
@@ -253,7 +258,7 @@ export class HealthStore extends EventEmitter {
         proxy,
         target: target || '*',
         status: 'info',
-        error: (err as any)?.message || String(err),
+        error: errMsg,
         errorClass: 'fatal',
         detail: `fatalErrors=${star.fatalErrors}`,
       });
@@ -288,7 +293,7 @@ export class HealthStore extends EventEmitter {
         }
       }
     }
-    if (count) console.log(`[DB] Pruned-on-boot ${count} frozen entries to ${demotionPeriod}ms finite ban`);
+    if (count) logger.info({ count, demotionPeriod }, 'pruned frozen entries on boot');
   }
 
   scoreProxy(proxy: string, target?: string, now = Date.now()): number {
@@ -375,7 +380,7 @@ export class HealthStore extends EventEmitter {
         count++;
       }
     }
-    if (count) console.log(`[DB] Loaded ${count} health rows (${this._data.size} proxies)`);
+    if (count) logger.info({ count, totalProxies: this._data.size }, 'loaded health rows');
   }
 
   private _flush() {
@@ -388,7 +393,7 @@ export class HealthStore extends EventEmitter {
       this._deleted.clear();
     }
     if (!this._dirty.size) return;
-    const rows: any[] = [];
+    const rows: Record<string, unknown>[] = [];
     for (const key of this._dirty) {
       const sep = key.indexOf('\x00');
       const proxy = key.slice(0, sep);
@@ -413,8 +418,8 @@ export class HealthStore extends EventEmitter {
       try {
         insertHealth(this.db, rows);
         this._dirty.clear();
-      } catch (e: any) {
-        console.warn('[DB] flush error', e.message);
+      } catch (e: unknown) {
+        logger.warn({ error: e instanceof Error ? e.message : String(e) }, 'flush error');
       }
     }
   }

@@ -1,8 +1,11 @@
+import { createLogger } from '../logger.js';
 import { httpCheck } from './checks/http.js';
 import { streamingCheck } from './checks/streaming.js';
 import { parseProxyForTcp, tcpCheck } from './checks/tcp.js';
 import { tlsCheck } from './checks/tls.js';
 import type { ProgressCallback, ProxyResult, ValidatorOptions } from './types.js';
+
+const logger = createLogger('validator-runner');
 
 /** Build a failure result consistently across all validation stages. */
 function fail(proxy: string, stage: string, error: string, extra?: Partial<ProxyResult>): ProxyResult {
@@ -53,8 +56,8 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
       if (!res.body.includes('origin')) {
         return fail(trimmed, 'http', 'invalid content', { httpCode: res.status, latency: res.latency });
       }
-    } catch (e: any) {
-      const msg = e.message || 'HTTP error';
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes('transparent')) {
         return fail(trimmed, 'http', 'transparent proxy');
       }
@@ -79,8 +82,8 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
       if (!tlsRes.authorized) {
         return fail(trimmed, 'tls', `TLS invalid: ${tlsRes.error}`);
       }
-    } catch (e: any) {
-      const msg = e.message || 'TLS failed';
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes('TLS invalid') || msg.includes('self-signed') || msg.includes('certificate')) {
         return fail(trimmed, 'tls', msg);
       }
@@ -104,8 +107,8 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
       if (res.chunks < minChunks) {
         return fail(trimmed, 'stream', `insufficient chunks ${res.chunks}/5`, { chunks: res.chunks, ttfb: res.ttfb });
       }
-    } catch (e: any) {
-      return fail(trimmed, 'stream', e.message || 'stream failed');
+    } catch (e: unknown) {
+      return fail(trimmed, 'stream', e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -125,8 +128,8 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
       if (res.chunks < 10) {
         return fail(trimmed, 'stream20', `insufficient chunks ${res.chunks}/20`, { chunks: res.chunks });
       }
-    } catch (e: any) {
-      return fail(trimmed, 'stream20', e.message || 'stream20 failed');
+    } catch (e: unknown) {
+      return fail(trimmed, 'stream20', e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -165,12 +168,21 @@ export async function runValidation(
         else invalid.push({ proxy: res.proxy, reason: res.error || 'error' });
         done++;
         onProgress?.(res, { total, done, valid: valid.length, invalid: invalid.length });
-      } catch (e: any) {
-        const r: ProxyResult = { proxy, valid: false, error: e.message || 'error', stage: 'unknown' };
+        logger.debug(
+          { proxy: res.proxy, valid: res.valid, stage: res.stage, error: res.error, done, total, validCount: valid.length, invalidCount: invalid.length },
+          'validation result',
+        );
+      } catch (e: unknown) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        const r: ProxyResult = { proxy, valid: false, error: errMsg, stage: 'unknown' };
         results.push(r);
         invalid.push({ proxy, reason: r.error! });
         done++;
         onProgress?.(r, { total, done, valid: valid.length, invalid: invalid.length });
+        logger.debug(
+          { proxy: r.proxy, valid: false, stage: r.stage, error: r.error, done, total, validCount: valid.length, invalidCount: invalid.length },
+          'validation error',
+        );
       }
     }
   }
