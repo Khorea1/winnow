@@ -119,6 +119,22 @@ describe('loadConfig', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+  it('accepts tcp-only as a valid validation mode', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'winnow-test-'));
+    const configPath = path.join(dir, 'config.json');
+    const orig = process.env.WINNOW_CONFIG;
+    process.env.WINNOW_CONFIG = configPath;
+
+    try {
+      fs.writeFileSync(configPath, JSON.stringify({ validationMode: 'tcp-only' }));
+      const cfg = loadConfig();
+      assert.equal(cfg.validationMode, 'tcp-only');
+    } finally {
+      if (orig) process.env.WINNOW_CONFIG = orig;
+      else delete process.env.WINNOW_CONFIG;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('updateConfig', () => {
