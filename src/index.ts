@@ -3,17 +3,18 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { loadConfig } from './config/index.js';
+import { loadConfig, resolveDataDir } from './config/index.js';
 import { registerDashboard } from './dashboard/index.js';
 import { initDb } from './db/index.js';
 import { EventLog } from './events.js';
 import { HealthStore } from './health/index.js';
+import { createLogger } from './logger.js';
 import { type ParsedProxy, parseLine } from './proxy/dial.js';
 import { healthCheckTick } from './proxy/rotator.js';
 import { createProxyServer } from './proxy/server.js';
 
 // CLI argument parser (manual, replaces minimist)
-function parseArgv(args: string[]) {
+function parseArgv(args: string[]): Record<string, string | number | boolean> {
   const r: Record<string, string | number | boolean> = {};
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -75,8 +76,7 @@ const health = new HealthStore(db, config, eventLog);
 // Proxy list
 let proxies: ParsedProxy[] = [];
 
-// Helper log function
-const log = (...a: any[]) => console.log(`[${new Date().toISOString().slice(11, 19)}]`, ...a);
+const logger = createLogger('main');
 
 // Load proxies
 function load() {
@@ -91,9 +91,9 @@ function load() {
     for (const p of list)
       if (!health.has(p.raw)) health.set(p.raw, { errors: 0, successes: 0, latency: 9999, bannedUntil: 0, lastOk: 0, fatalErrors: 0, frozenUntil: 0 });
     proxies = list;
-    log(`[LOAD] ${proxies.length} proxies`);
-  } catch (e: any) {
-    log(`[WARN] Failed to load ${config.proxyFile}: ${e.message}`);
+    logger.info({ count: proxies.length }, 'loaded proxies');
+  } catch (e: unknown) {
+    logger.warn({ file: config.proxyFile, error: e instanceof Error ? e.message : String(e) }, 'failed to load proxy file');
   }
 }
 
@@ -120,7 +120,7 @@ let hadUncaughtException = false;
 function shutdown(reason = 'SIGTERM') {
   if (shuttingDown) return;
   shuttingDown = true;
-  log(`[SHUTDOWN] ${reason} — flushing health...`);
+  logger.info({ reason }, 'shutting down');
   // Clear healthcheck interval — next tick sees shuttingDown and bails
   if (_hcInterval !== undefined) {
     clearInterval(_hcInterval);
@@ -138,7 +138,14 @@ function shutdown(reason = 'SIGTERM') {
   db.close();
   // Close server (drains connections up to 10s)
   if (server) {
-    server.close(() => log('[SHUTDOWN] server closed'));
+    server.close(() => logger.info({}, 'server closed'));
+  }
+  // Remove PID file
+  try {
+    const pidPath = path.join(resolveDataDir(), '.winnow.pid');
+    fs.unlinkSync(pidPath);
+  } catch {
+    /* non-fatal */
   }
   // Hard exit after 10s if graceful close stalls
   // Use hadUncaughtException to signal non-zero exit
@@ -146,18 +153,15 @@ function shutdown(reason = 'SIGTERM') {
 }
 process.on('uncaughtException', (err) => {
   hadUncaughtException = true;
-  console.error('[FATAL] Uncaught exception:', err);
+  logger.error({ error: err.message, stack: err.stack }, 'uncaught exception');
   shutdown('uncaughtException');
 });
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('unhandledRejection', (reason) => {
-  // Log but don't shut down — unhandled rejections from non-critical paths
-  // (e.g. health check timeouts) shouldn't crash the proxy.
-  console.error('[WARN] Unhandled rejection:', reason);
+  logger.warn({ error: String(reason) }, 'unhandled rejection');
 });
-
 let _hcRunning = false;
 _hcInterval = setInterval(async () => {
   if (_hcRunning || shuttingDown) return;
@@ -171,9 +175,9 @@ _hcInterval = setInterval(async () => {
 // Start server — wrap in error handling for EADDRINUSE etc.
 server.on('error', (err: NodeJS.ErrnoException) => {
   if (err.code === 'EADDRINUSE') {
-    log(`[FATAL] Port ${config.port} already in use — cannot bind`);
+    logger.error({ port: config.port }, 'port already in use');
   } else {
-    log(`[FATAL] Server error:`, err.message);
+    logger.error({ error: err.message }, 'server error');
   }
   shutdown('server error');
   if (err.code === 'EADDRINUSE' || err.code === 'EACCES') {
@@ -181,11 +185,15 @@ server.on('error', (err: NodeJS.ErrnoException) => {
   }
 });
 server.listen(config.port, '0.0.0.0', () => {
-  log(
-    `[START v1.0.0] :${config.port} | file=${config.proxyFile} | retries=${config.retries} | timeout=${config.timeout}ms | targets=${config.targets}\n[INFO] proxy -> http://127.0.0.1:${config.port} | dashboard http://127.0.0.1:${config.port}/dashboard`,
-  );
+  logger.info({ port: config.port, file: config.proxyFile, retries: config.retries, timeout: config.timeout, targets: config.targets }, 'server started');
 });
-
+// Write PID file for graceful stop
+try {
+  const pidPath = path.join(resolveDataDir(), '.winnow.pid');
+  fs.writeFileSync(pidPath, String(process.pid), 'utf8');
+} catch {
+  /* non-fatal */
+}
 // Initial load
 load();
 // Watch for file changes (inotify on Linux — instant vs polling)
@@ -196,6 +204,6 @@ try {
     clearTimeout(_reloadTimer);
     _reloadTimer = setTimeout(() => load(), 300);
   });
-} catch (e: any) {
-  log(`[WARN] Could not watch proxy file: ${e.message}`);
+} catch (e: unknown) {
+  logger.warn({ file: config.proxyFile, error: e instanceof Error ? e.message : String(e) }, 'could not watch proxy file');
 }
