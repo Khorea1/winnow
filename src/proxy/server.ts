@@ -187,11 +187,9 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
         failed = true;
         const totalBytes = bytesUp + bytesDown;
         const totalLatency = Date.now() - start;
-        if (totalBytes > 0 || totalLatency > 1000) {
-          ctx.health.recordSuccess(upstream.raw, targetKey, dialLatency, start);
-          ctx.onRequestMetrics?.({ proxy: upstream.raw, target: targetKey, success: true, latency: totalLatency, bytes: totalBytes });
-          logger.info({ reqId, proxy: upstream.raw, target: targetKey, bytes: totalBytes, latency: totalLatency }, 'tunnel completed');
-        }
+        ctx.health.recordSuccess(upstream.raw, targetKey, dialLatency, start);
+        ctx.onRequestMetrics?.({ proxy: upstream.raw, target: targetKey, success: true, latency: totalLatency, bytes: totalBytes });
+        logger.info({ reqId, proxy: upstream.raw, target: targetKey, bytes: totalBytes, latency: totalLatency }, 'tunnel completed');
       };
 
       clientSock.on('error', () => {
@@ -301,7 +299,7 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
       const pathAndQuery = targetUrl.pathname + targetUrl.search;
       let headers = '';
       for (const [k, v] of Object.entries(req.headers)) {
-        if (HOP_BY_HOP.has(k.toLowerCase())) continue;
+        if (['host', ...HOP_BY_HOP].includes(k.toLowerCase())) continue;
         if (Array.isArray(v)) headers += `${k}: ${v.join(', ')}\r\n`;
         else if (v) headers += `${k}: ${v}\r\n`;
       }
