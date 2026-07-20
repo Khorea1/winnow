@@ -13,3 +13,4 @@ config.json
 .env.*
 RULES.md
 docs/
+.winnow.pid

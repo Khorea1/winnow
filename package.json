@@ -15,6 +15,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome check src/",
     "lint:fix": "biome check --write src/",
+    "stop": "node scripts/stop.mjs",
+    "stop:docker": "docker compose stop",
     "format": "biome format --write src/",
     "check": "biome check src/ && tsc --noEmit && tsx --test src/__tests__/*.test.ts"
   },
