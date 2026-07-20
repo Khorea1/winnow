@@ -86,7 +86,6 @@ export function httpConnect(upstream: ParsedProxy, tHost: string, tPort: number,
         reject(new Error('timeout http'));
       }
     }, timeout);
-
     sock.on('connect', () => {
       const req = `CONNECT ${tHost}:${tPort} HTTP/1.1\r\nHost: ${tHost}:${tPort}\r\n${auth}Connection: keep-alive\r\n\r\n`;
       sock.write(req);
@@ -94,6 +93,13 @@ export function httpConnect(upstream: ParsedProxy, tHost: string, tPort: number,
     sock.on('data', (d: Buffer) => {
       if (done) return;
       buf = Buffer.concat([buf, d]);
+      if (buf.length > 32768) {
+        done = true;
+        clearTimeout(to);
+        sock.destroy();
+        reject(new Error('upstream response header too large'));
+        return;
+      }
       const headEnd = buf.indexOf('\r\n\r\n');
       if (headEnd === -1) return;
       const headStr = buf.slice(0, headEnd).toString();
@@ -155,12 +161,21 @@ export function socks5Connect(upstream: ParsedProxy, tHost: string, tPort: numbe
         if (data[1] === 0x02) {
           const user = u.username;
           const pass = u.password;
-          const b = Buffer.alloc(3 + user.length + pass.length);
+          const ub = Buffer.from(user);
+          const pb = Buffer.from(pass);
+          if (ub.length > 255 || pb.length > 255) {
+            done = true;
+            clearTimeout(to);
+            sock.destroy();
+            reject(new Error('socks5 auth too long'));
+            return;
+          }
+          const b = Buffer.alloc(3 + ub.length + pb.length);
           b[0] = 0x01;
-          b[1] = user.length;
-          b.write(user, 2);
-          b[2 + user.length] = pass.length;
-          b.write(pass, 3 + user.length);
+          b[1] = ub.length;
+          ub.copy(b, 2);
+          b[2 + ub.length] = pb.length;
+          pb.copy(b, 3 + ub.length);
           sock.write(b);
           stage = 1;
           return;
@@ -247,7 +262,7 @@ export function isBlockedTarget(host: string): boolean {
     const v4mapped = lower.replace(/^::ffff:/, '').replace(/^0:0:0:0:0:0:ffff:/, '');
     if (v4mapped !== lower && /^\d+\.\d+\.\d+\.\d+$/.test(v4mapped)) {
       const parts = v4mapped.split('.').map(Number);
-      if (parts[0] === 127) return true;
+      if (parts[0] === 0 || parts[0] === 127) return true;
       if (parts[0] === 169 && parts[1] === 254) return true;
       if (parts[0] === 10) return true;
       if (parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127) return true;
