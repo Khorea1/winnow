@@ -147,14 +147,14 @@ export async function runValidation(
   const results: ProxyResult[] = [];
   const total = proxyList.length;
   let done = 0;
-
   // Flat worker pool: each worker pulls from a shared queue
-  const queue = [...proxyList];
+  const queue = proxyList;
+  let idx = 0;
   const workerCount = Math.min(opts.threads, queue.length);
 
   async function worker() {
-    while (queue.length > 0 && !abortSignal?.aborted) {
-      const proxy = queue.shift()!;
+    while (idx < queue.length && !abortSignal?.aborted) {
+      const proxy = queue[idx++];
 
       if (opts.throttle > 0) {
         await new Promise((r) => setTimeout(r, Math.floor(Math.random() * (opts.throttle + 1))));
