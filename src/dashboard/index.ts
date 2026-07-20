@@ -53,9 +53,10 @@ function isSafeProxyFile(p: string, allowedDir: string): boolean {
   if (typeof p !== 'string' || !p) return false;
   if (p.includes('\0')) return false;
   const abs = path.isAbsolute(p) ? p : path.resolve(allowedDir, p);
+  const dir = path.dirname(abs);
   try {
-    const real = fs.realpathSync(abs);
-    if (!real.startsWith(allowedDir + path.sep) && real !== allowedDir) return false;
+    const realDir = fs.realpathSync(dir);
+    if (!realDir.startsWith(allowedDir + path.sep) && realDir !== allowedDir) return false;
   } catch {
     return false;
   }
@@ -223,6 +224,11 @@ export function registerDashboard(
           const patch = JSON.parse(body);
           const updated = updateConfig(patch);
           Object.assign(cfgRef.current, updated);
+          // Refresh server-level timeouts from current config
+          if (typeof updated.timeout === 'number') {
+            server.timeout = Math.max(updated.timeout, 5000);
+            server.keepAliveTimeout = Math.min(server.timeout, 30000);
+          }
           respondJson(res, updated);
         } catch (e: unknown) {
           res.writeHead(400, { 'Content-Type': 'application/json' });

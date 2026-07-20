@@ -278,9 +278,8 @@ export class HealthStore extends EventEmitter {
     for (const [proxy, byTarget] of this._data) {
       for (const [target, e] of byTarget) {
         if (e.frozenUntil > 0) {
-          e.frozenUntil = demotedTo;
-          e.fatalErrors = Math.floor(e.fatalErrors / 2);
-          this._dirty.add(`${proxy}\x00${target}`);
+          e.frozenUntil = 0;
+          e.bannedUntil = demotedTo;
           count++;
           // LOG: emit unban event on boot thaw
           EventLog.safePush(this._eventLog, {

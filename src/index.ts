@@ -133,22 +133,19 @@ function shutdown(reason = 'SIGTERM') {
     } catch {}
     fileWatcher = undefined;
   }
-  // Stop health store & db synchronously
-  health.stop();
-  db.close();
-  // Close server (drains connections up to 10s)
+  // Close server first — stop accepting new connections, drain in-flight
   if (server) {
     server.close(() => logger.info({}, 'server closed'));
   }
+  // Then persist health state (in-flight failures after this are transient-only)
+  health.stop();
+  db.close();
   // Remove PID file
   try {
     const pidPath = path.join(resolveDataDir(), '.winnow.pid');
     fs.unlinkSync(pidPath);
-  } catch {
-    /* non-fatal */
-  }
+  } catch {}
   // Hard exit after 10s if graceful close stalls
-  // Use hadUncaughtException to signal non-zero exit
   setTimeout(() => process.exit(hadUncaughtException ? 1 : 0), 10_000).unref();
 }
 process.on('uncaughtException', (err) => {
