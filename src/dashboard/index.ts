@@ -310,7 +310,7 @@ export function registerDashboard(
           'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache',
           Connection: 'keep-alive',
-          'Access-Control-Allow-Origin': process.env.WINNOW_CORS_ORIGIN || '*',
+          'Access-Control-Allow-Origin': process.env.WINNOW_CORS_ORIGIN || 'none',
         });
         res.write('event: connected\ndata: {}\n\n');
         sseClients.add(res);
