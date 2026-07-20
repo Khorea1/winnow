@@ -32,8 +32,8 @@ export async function tlsCheck(
     const selfSigned = isSelfSignedError(res);
 
     if (opts.strictTLS && !res.authorized) {
-      const err: any = new Error(`TLS invalid/self-signed: ${res.authorizationError || 'unauthorized'}`);
-      err.tlsResult = res;
+      const err = new Error(`TLS invalid/self-signed: ${res.authorizationError || 'unauthorized'}`);
+      Object.assign(err, { tlsResult: res });
       throw err;
     }
 
@@ -43,7 +43,7 @@ export async function tlsCheck(
       selfSigned,
       protocol: res.protocol,
     };
-  } catch (e: any) {
+  } catch (e: unknown) {
     try {
       sock.destroy();
     } catch {}

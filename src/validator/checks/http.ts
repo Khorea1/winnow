@@ -145,7 +145,7 @@ export async function httpCheck(
       resolve({ latency: totalLatency, ttfb, status, body: bodyStr, headers: headerStr });
     });
 
-    socket.on('error', (e: any) => {
+    socket.on('error', (e: Error) => {
       if (!done) {
         done = true;
         clearTimeout(timeout);
@@ -164,7 +164,7 @@ export async function httpCheck(
       if (!done) {
         done = true;
         clearTimeout(timeout);
-        reject(e as any);
+        reject(e);
       }
     }
   });

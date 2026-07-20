@@ -4,7 +4,7 @@ import tls from 'node:tls';
 export interface TlsResult {
   authorized: boolean;
   authorizationError?: string;
-  cert?: any;
+  cert?: tls.PeerCertificate | null;
   protocol?: string;
 }
 
