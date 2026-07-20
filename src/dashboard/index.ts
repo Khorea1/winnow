@@ -22,7 +22,7 @@ let _dashboardHtml: string | null = null;
 const MAX_BODY_SIZE = 32 * 1024;
 interface ValidationOverrides {
   threads?: number;
-  mode?: 'quick' | 'standard' | 'strict' | 'stream';
+  mode?: 'quick' | 'standard' | 'strict' | 'stream' | 'tcp-only';
   baseUrl?: string;
   maxLatency?: number;
   connectTimeout?: number;

@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { loadConfig } from '../config/index.js';
 import { createLogger } from '../logger.js';
 import { runValidation } from './runner.js';
 import type { ProgressCallback, ValidatorOptions } from './types.js';
@@ -14,7 +15,7 @@ export interface CliOptions extends Partial<ValidatorOptions> {
 
 interface ValidationConfigFragment {
   validationThreads?: number;
-  validationMode?: 'quick' | 'standard' | 'strict' | 'stream';
+  validationMode?: 'quick' | 'standard' | 'strict' | 'stream' | 'tcp-only';
   validationBaseUrl?: string;
   validationConnectTimeout?: number;
   validationMaxLatency?: number;
@@ -71,15 +72,28 @@ export async function validateFile(filePath: string, opts: ValidatorOptions, onP
 export async function cliMain() {
   const args = process.argv.slice(2);
   let proxyFile = '';
-  let threads = 20;
-  let mode: ValidatorOptions['mode'] = 'quick';
-  let baseUrl = 'http://httpbin.org';
   let output = '';
   let jsonOutput = '';
-  let insecure = false;
-  let strictTLS = false;
-  let anonCheck = false;
-  let throttle = 100;
+  // Overrides start undefined so unset flags fall through to config.json / built-in defaults
+  // (see buildOptionsFromConfig), instead of silently clobbering them with hardcoded values.
+  const overrides: Partial<ValidatorOptions> = {};
+
+  const nextArg = (i: number, flag: string): string => {
+    const v = args[i + 1];
+    if (v === undefined) {
+      logger.error({}, `missing value for ${flag}`);
+      process.exit(1);
+    }
+    return v;
+  };
+  const nextInt = (i: number, flag: string): number => {
+    const n = parseInt(nextArg(i, flag), 10);
+    if (!Number.isFinite(n)) {
+      logger.error({}, `invalid number for ${flag}`);
+      process.exit(1);
+    }
+    return n;
+  };
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -88,58 +102,108 @@ export async function cliMain() {
 Usage: validator [options] [<proxy-file>]
 
 Options:
-  -f, --file <path>         Proxy list file (default: from config)
-  -t, --threads <n>         Concurrent validation threads (default: 20)
-  -m, --mode <type>         Validation mode: quick|standard|strict|stream (default: quick)
-  -b, --base-url <url>      Base URL for HTTP validation (default: http://httpbin.org)
-  -o, --output <file>       Save valid proxies to file
-  --json-output <file>      Save detailed JSON report
-  -i, --insecure            Skip TLS certificate validation
-  -s, --strict-tls          Enforce strict TLS validation
-  -a, --anon-check          Check for transparent proxies (anonymity)
-  -T, --throttle <n>       Jitter throttle in ms between probes (default: 100)
-  -h, --help                Show this help message
+  --file <path>         Proxy file to validate
+  --mode <mode>         quick | standard | strict | tcp-only | stream
+  --threads <n>         Concurrent validation threads
+  --timeout <ms>        Request timeout (alias for --max-latency)
+  --base-url <url>      Base URL for HTTP checks
+  --max-latency <ms>    Maximum acceptable latency
+  --connect-timeout <s> TCP connect timeout (seconds)
+  --ttfb-ratio <n>      TTFB ratio threshold
+  --max-gap <ms>        Time gap check threshold
+  --json <path>         Write JSON results to file
+  --output <path>       Write valid proxies to file (one per line)
+  --insecure            Allow invalid TLS certificates
+  --strict-tls          Reject self-signed / unauthorized certificates
+  --anon-check          Verify proxy anonymity (X-Forwarded-For)
+  --throttle <ms>       Minimum delay between checks
+  --tls-host <host>     Target for explicit TLS check
+  --tls-port <port>     Port for explicit TLS check (default 443)
+  --help                Show this help message
+
+Unset options fall back to config.json, then to built-in defaults.
 
 Examples:
   node dist/validator/index.js proxies.txt
-  node dist/validator/index.js proxies.txt --mode strict -o valid.txt
+  node dist/validator/index.js --file proxies.txt --mode strict --json results.json
 `);
       process.exit(0);
     }
+    if (a === '-f' || a === '--file') {
+      proxyFile = nextArg(i, a);
+      i++;
+      continue;
+    }
     if (a === '-t' || a === '--threads') {
-      threads = parseInt(args[++i], 10);
+      overrides.threads = nextInt(i, a);
+      i++;
       continue;
     }
     if (a === '-o' || a === '--output') {
-      output = args[++i];
+      output = nextArg(i, a);
+      i++;
       continue;
     }
-    if (a === '--json-output') {
-      jsonOutput = args[++i];
+    if (a === '--json' || a === '-j' || a === '--json-output') {
+      jsonOutput = nextArg(i, a);
+      i++;
       continue;
     }
-    if (a === '--mode') {
-      mode = args[++i] as ValidatorOptions['mode'];
+    if (a === '-m' || a === '--mode') {
+      overrides.mode = nextArg(i, a) as ValidatorOptions['mode'];
+      i++;
       continue;
     }
-    if (a === '--base-url' || a === '-b') {
-      baseUrl = args[++i];
+    if (a === '-b' || a === '--base-url') {
+      overrides.baseUrl = nextArg(i, a);
+      i++;
+      continue;
+    }
+    if (a === '--timeout' || a === '--max-latency') {
+      overrides.maxLatency = nextInt(i, a);
+      i++;
+      continue;
+    }
+    if (a === '--connect-timeout') {
+      overrides.connectTimeout = nextInt(i, a);
+      i++;
+      continue;
+    }
+    if (a === '--ttfb-ratio') {
+      overrides.ttfbRatio = nextInt(i, a);
+      i++;
+      continue;
+    }
+    if (a === '--max-gap') {
+      overrides.maxGap = nextInt(i, a);
+      i++;
+      continue;
+    }
+    if (a === '--tls-host') {
+      overrides.tlsHost = nextArg(i, a);
+      i++;
+      continue;
+    }
+    if (a === '--tls-port') {
+      overrides.tlsPort = nextInt(i, a);
+      i++;
       continue;
     }
     if (a === '--insecure' || a === '-i') {
-      insecure = true;
+      overrides.insecure = true;
       continue;
     }
     if (a === '--strict-tls' || a === '-s') {
-      strictTLS = true;
+      overrides.strictTLS = true;
       continue;
     }
     if (a === '--anon-check' || a === '-a') {
-      anonCheck = true;
+      overrides.anonCheck = true;
       continue;
     }
     if (a === '--throttle' || a === '-T') {
-      throttle = parseInt(args[++i], 10);
+      overrides.throttle = nextInt(i, a);
+      i++;
       continue;
     }
     if (!a.startsWith('-')) {
@@ -148,25 +212,14 @@ Examples:
   }
 
   if (!proxyFile) {
-    logger.error({}, 'usage: validator <file> [--threads 20] [--mode quick|standard|strict|stream] [--json-output out.json]');
+    logger.error({}, 'usage: validator <file> [--threads 20] [--mode quick|standard|strict|tcp-only|stream] [--json out.json]');
     process.exit(1);
   }
 
-  const opts: ValidatorOptions = {
-    threads,
-    mode,
-    baseUrl,
-    connectTimeout: 4,
-    maxLatency: 7000,
-    ttfbRatio: 100,
-    maxGap: 0,
-    insecure,
-    strictTLS,
-    anonCheck,
-    throttle,
-    tlsHost: 'www.google.com',
-    tlsPort: 443,
-  };
+  // Base the CLI's option set on config.json (same file the server reads), then
+  // apply any flags passed on the command line — mirrors the rest of the app's
+  // "config file, then CLI flag" precedence instead of ignoring config.json outright.
+  const opts: ValidatorOptions = buildOptionsFromConfig(loadConfig(), overrides);
 
   const onProgress: ProgressCallback = (res, _stats) => {
     if (res.valid) console.log(`[VALID] ${res.proxy}`);

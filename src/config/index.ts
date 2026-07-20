@@ -23,7 +23,7 @@ export interface RotatorConfig {
   maxErrors: number;
   timeout: number;
   validationThreads: number;
-  validationMode: 'quick' | 'standard' | 'strict' | 'stream';
+  validationMode: 'quick' | 'standard' | 'strict' | 'stream' | 'tcp-only';
   validationBaseUrl: string;
   validationMaxLatency: number;
   validationConnectTimeout: number;
@@ -118,9 +118,9 @@ function ensureString(value: unknown, def: string, validate?: (s: string) => boo
   const s = value.trim();
   return validate && !validate(s) ? def : s;
 }
-function ensureMode(value: unknown, def: 'quick' | 'standard' | 'strict' | 'stream'): 'quick' | 'standard' | 'strict' | 'stream' {
-  const modes = new Set(['quick', 'standard', 'strict', 'stream']);
-  return modes.has(value as string) ? (value as 'quick' | 'standard' | 'strict' | 'stream') : def;
+function ensureMode(value: unknown, def: 'quick' | 'standard' | 'strict' | 'stream' | 'tcp-only'): 'quick' | 'standard' | 'strict' | 'stream' | 'tcp-only' {
+  const modes = new Set(['quick', 'standard', 'strict', 'stream', 'tcp-only']);
+  return modes.has(value as string) ? (value as 'quick' | 'standard' | 'strict' | 'stream' | 'tcp-only') : def;
 }
 
 function sanitize(cfg: Record<string, unknown>): RotatorConfig {
