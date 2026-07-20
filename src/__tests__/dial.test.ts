@@ -43,8 +43,8 @@ describe('parseHostPort', () => {
     assert.equal(parseHostPort(''), null);
   });
 
-  it('returns empty host for whitespace-only input', () => {
-    assert.deepEqual(parseHostPort('  '), { host: '', port: 443 });
+  it('returns null for whitespace-only input', () => {
+    assert.equal(parseHostPort('  '), null);
   });
 
   it('uses custom default port', () => {

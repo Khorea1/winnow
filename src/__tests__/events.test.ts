@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import type { ProxyEvent } from '../events.js';
 import { EventLog } from '../events.js';
 
 describe('EventLog', () => {
@@ -63,7 +64,7 @@ describe('EventLog', () => {
 
   it('subscribe receives events', () => {
     const log = new EventLog(100);
-    const received: any[] = [];
+    const received: ProxyEvent[] = [];
     log.subscribe((e) => received.push(e));
     log.push({ type: 'connect', proxy: 'p1', target: 't', status: 'success', latency: 100 });
     assert.equal(received.length, 1);
@@ -73,8 +74,8 @@ describe('EventLog', () => {
 
   it('subscribe does not receive events after unsubscribe', () => {
     const log = new EventLog(100);
-    const received: any[] = [];
-    const fn = (e: any) => received.push(e);
+    const received: ProxyEvent[] = [];
+    const fn = (e: ProxyEvent) => received.push(e);
     log.subscribe(fn);
     log.push({ type: 'connect', proxy: 'p1', target: 't', status: 'attempt' });
     log.unsubscribe(fn);

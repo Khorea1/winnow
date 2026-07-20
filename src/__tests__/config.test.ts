@@ -136,7 +136,7 @@ describe('updateConfig', () => {
   it('updates targets (allowed key)', () => {
     const result = updateConfig({
       targets: ['example.com:80'],
-    } as any);
+    });
     assert.deepEqual(result.targets, ['example.com:80']);
   });
 
@@ -144,7 +144,7 @@ describe('updateConfig', () => {
     // proxyFile is NOT in API_ALLOWED_KEYS (not listed)
     const result = updateConfig({
       proxyFile: '/evil/path',
-    } as any);
+    });
     assert.notEqual(result.proxyFile, '/evil/path');
   });
 

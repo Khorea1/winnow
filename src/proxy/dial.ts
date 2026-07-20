@@ -21,6 +21,7 @@ export function parseLine(line: string): ParsedProxy | null {
 export function parseHostPort(input: string, defaultPort = 443): { host: string; port: number } | null {
   if (!input) return null;
   input = input.trim();
+  if (!input) return null;
   if (input.startsWith('[')) {
     const closeIdx = input.indexOf(']');
     if (closeIdx === -1) return null;

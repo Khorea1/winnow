@@ -192,7 +192,7 @@ export function registerDashboard(
     try {
       const urlObj = new URL(req.url || '/', 'http://localhost');
       const pathname = urlObj.pathname;
-      const needsAuth = pathname.startsWith('/api/') || pathname === '/dashboard' || pathname === '/events' || pathname === '/__stats';
+      const needsAuth = pathname.startsWith('/api/') || pathname === '/dashboard' || pathname === '/events';
 
       if (needsAuth && !isAuthorized(req)) {
         res.writeHead(401, { 'Content-Type': 'application/json' });

@@ -39,12 +39,12 @@ const argv = parseArgv(process.argv.slice(2));
 
 // Parse CLI args
 // Parse CLI args — undefined when flag not passed, so config.json defaults survive
-const cliPort = argv.port !== undefined ? Number(argv.port) : undefined;
-const cliProxyFile = argv.proxyfile !== undefined ? (argv.proxyfile as string) : undefined;
-const cliConfig = argv.config !== undefined ? (argv.config as string) : undefined;
-const cliTimeout = argv.timeout !== undefined ? Number(argv.timeout) : undefined;
-const cliValidationMode = (argv.validationmode as string | undefined) || process.env.WINNOW_VALIDATION_MODE || undefined;
-const cliDataDir = (argv.datadir as string | undefined) || process.env.WINNOW_DATA_DIR || process.env.DATA_DIR || undefined;
+const cliPort = typeof argv.port === 'string' ? Number(argv.port) : undefined;
+const cliProxyFile = typeof argv.proxyfile === 'string' ? argv.proxyfile : undefined;
+const cliConfig = typeof argv.config === 'string' ? argv.config : undefined;
+const cliTimeout = typeof argv.timeout === 'string' ? Number(argv.timeout) : undefined;
+const cliValidationMode = typeof argv.validationmode === 'string' ? argv.validationmode : process.env.WINNOW_VALIDATION_MODE || undefined;
+const cliDataDir = typeof argv.datadir === 'string' ? argv.datadir : process.env.WINNOW_DATA_DIR || process.env.DATA_DIR || undefined;
 // If --data-dir was passed, set env so config resolvers use it
 if (cliDataDir?.trim()) {
   process.env.WINNOW_DATA_DIR = path.resolve(cliDataDir.trim());

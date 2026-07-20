@@ -36,7 +36,7 @@ export function buildOptionsFromConfig(config: ValidationConfigFragment, overrid
     connectTimeout: overrides.connectTimeout ?? config.validationConnectTimeout ?? 4,
     maxLatency: overrides.maxLatency ?? config.validationMaxLatency ?? 7000,
     ttfbRatio: overrides.ttfbRatio ?? config.validationTtfbRatio ?? 100,
-    maxGap: overrides.maxGap ?? config.validationMaxGap ?? 0,
+    maxGap: overrides.maxGap ?? config.validationMaxGap ?? 5000,
     insecure: overrides.insecure ?? config.validationInsecure ?? false,
     strictTLS: overrides.strictTLS ?? config.validationStrictTLS ?? false,
     anonCheck: overrides.anonCheck ?? config.validationAnonCheck ?? false,
