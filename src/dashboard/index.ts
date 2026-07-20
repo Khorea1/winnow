@@ -6,12 +6,15 @@ import type Database from 'better-sqlite3';
 import { type RotatorConfig, resolveDataDir, updateConfig } from '../config/index.js';
 import { createValidationRun, finishValidationRun } from '../db/index.js';
 import { EventLog } from '../events.js';
-import { HealthStore } from '../health/index.js';
+import { type HealthEntry, HealthStore } from '../health/index.js';
+import { createLogger } from '../logger.js';
 import { parseLine } from '../proxy/dial.js';
 import { buildOptionsFromConfig } from '../validator/index.js';
 import { runValidation } from '../validator/runner.js';
+import type { ProxyResult } from '../validator/types.js';
 
 let _validationRunning = false;
+const logger = createLogger('dashboard');
 let _abortController: AbortController | null = null;
 
 const _DASHBOARD_PATH = path.join(import.meta.dirname, '../../public/dashboard.html');
@@ -70,7 +73,7 @@ function sanitizeProxyKey(key: string): string {
   }
 }
 
-function respondJson(res: ServerResponse, data: any, status = 200) {
+function respondJson(res: ServerResponse, data: unknown, status = 200) {
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(data));
 }
@@ -131,21 +134,23 @@ function serveDashboard(res: ServerResponse) {
         "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'",
     });
     res.end(_dashboardHtml);
-  } catch (e: any) {
+  } catch (e: unknown) {
     res.writeHead(500);
-    res.end(`Dashboard error: ${e.message}`);
+    res.end(`Dashboard error: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
-function broadcast(clients: Set<ServerResponse>, event: string, data: any) {
+function broadcast(clients: Set<ServerResponse>, event: string, data: unknown) {
   const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  const dead: ServerResponse[] = [];
   for (const res of clients) {
     try {
       res.write(msg);
     } catch {
-      clients.delete(res);
+      dead.push(res);
     }
   }
+  for (const d of dead) clients.delete(d);
 }
 export function registerDashboard(
   server: http.Server,
@@ -154,7 +159,7 @@ export function registerDashboard(
   const { config: cfgRef, health, db, eventLog } = ctx;
   const sseClients = new Set<ServerResponse>();
 
-  health.on('health:update', (data: any) => {
+  health.on('health:update', (data: unknown) => {
     broadcast(sseClients, 'health:update', data);
   });
 
@@ -165,7 +170,7 @@ export function registerDashboard(
   const poolInterval = setInterval(() => {
     try {
       const now = Date.now();
-      const aliveCount = [...health.entries()].filter(([_raw, h]: any) => {
+      const aliveCount = [...health.entries()].filter(([_raw, h]: [string, HealthEntry]) => {
         if (h.frozenUntil > now || now < h.bannedUntil || h.errors >= (cfgRef.current.maxErrors ?? 3)) return false;
         return true;
       }).length;
@@ -219,9 +224,9 @@ export function registerDashboard(
           const updated = updateConfig(patch);
           Object.assign(cfgRef.current, updated);
           respondJson(res, updated);
-        } catch (e: any) {
+        } catch (e: unknown) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: e.message }));
+          res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
         }
         return;
       }
@@ -274,9 +279,9 @@ export function registerDashboard(
           EventLog.safePush(eventLog, { type: 'pool', proxy: key, target: '', status: 'info', detail: 'removed via dashboard' });
           broadcast(sseClients, 'proxy:removed', { key });
           respondJson(res, { removed: true, key, removedFromFile, removedFromHealth });
-        } catch (e: any) {
+        } catch (e: unknown) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: e.message }));
+          res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
         }
         return;
       }
@@ -313,7 +318,7 @@ export function registerDashboard(
       if (pathname === '/api/validate' && req.method === 'POST') {
         const body = await readBody(req, res);
         if (body === null) return;
-        let custom: any = {};
+        let custom: Partial<ValidationOverrides> = {};
         if (body.trim()) {
           try {
             custom = JSON.parse(body);
@@ -334,9 +339,9 @@ export function registerDashboard(
         try {
           const rows = db.prepare('SELECT * FROM validation_runs ORDER BY id DESC LIMIT 20').all();
           respondJson(res, rows);
-        } catch (e: any) {
+        } catch (e: unknown) {
           res.writeHead(500);
-          res.end(e.message);
+          res.end(e instanceof Error ? e.message : String(e));
         }
         return;
       }
@@ -368,15 +373,15 @@ export function registerDashboard(
         const now = Date.now();
         const maxErrors = cfgRef.current.maxErrors ?? 3;
         const list = [...health.entries()]
-          .map(([raw, h]: any) => {
+          .map(([raw, h]: [string, HealthEntry]) => {
             const frozen = h.frozenUntil > now;
             const banned = now < h.bannedUntil;
             const score = frozen || banned ? Infinity : HealthStore.computeScore(h, now);
             return { proxy: sanitizeProxyKey(raw), ...h, score, banned, frozen };
           })
-          .sort((a: any, b: any) => a.score - b.score)
+          .sort((a, b) => a.score - b.score)
           .slice(0, 50);
-        const alive = [...health.entries()].filter(([_raw, h]: any) => {
+        const alive = [...health.entries()].filter(([_raw, h]: [string, HealthEntry]) => {
           if (h.frozenUntil > now || now < h.bannedUntil || h.errors >= maxErrors) return false;
           return true;
         }).length;
@@ -395,10 +400,10 @@ export function registerDashboard(
       for (const listener of origListeners) {
         listener(req, res);
       }
-    } catch (e: any) {
+    } catch (e: unknown) {
       try {
         res.writeHead(500);
-        res.end(e.message);
+        res.end(e instanceof Error ? e.message : String(e));
       } catch {}
     }
   });
@@ -471,7 +476,7 @@ async function startValidation(
     let validCount = 0;
     let invalidCount = 0;
 
-    const onProgress = (result: any, stats: any) => {
+    const onProgress = (result: ProxyResult, stats: { total: number; done: number; valid: number; invalid: number }) => {
       const now = Date.now();
       if (result.valid) {
         const latency = result.latency || 300;
@@ -513,9 +518,9 @@ async function startValidation(
           const tmpFile = path.join(dir, `.${path.basename(proxyFile)}.tmp-${Date.now()}`);
           fs.writeFileSync(tmpFile, `${result.valid.join('\n')}\n`, 'utf8');
           fs.renameSync(tmpFile, proxyFile);
-          console.log(`[VALIDATE] Pruned file: ${result.valid.length} proxies kept (removed ${result.invalid.length})`);
+          logger.info({ kept: result.valid.length, removed: result.invalid.length }, 'pruned proxy file');
         } else {
-          console.log('[VALIDATE] No valid proxies, keeping original file for safety');
+          logger.info({}, 'no valid proxies, keeping original file');
         }
       } else {
         const existing = new Set<string>();
@@ -534,24 +539,25 @@ async function startValidation(
           const finalContent = `${(existingContent ? existingContent.replace(/\n*$/, '\n') : '') + newProxies.join('\n')}\n`;
           fs.writeFileSync(tmpFile, finalContent, 'utf8');
           fs.renameSync(tmpFile, proxyFile);
-          console.log(`[VALIDATE] Auto-imported ${newProxies.length} new proxies`);
+          logger.info({ count: newProxies.length }, 'auto-imported new proxies');
         }
       }
-    } catch (e: any) {
-      console.warn('[VALIDATE] File update error:', e.message);
+    } catch (e: unknown) {
+      logger.warn({ error: e instanceof Error ? e.message : String(e) }, 'file update error');
     }
 
     finishValidationRun(ctx.db, runId, uniq.length, validCount, invalidCount, 0);
     broadcast(ctx.sseClients, 'validation:complete', { jobId: runId, exitCode: 0, total: uniq.length, passed: validCount, failed: invalidCount });
-  } catch (e: any) {
-    if (e.message === 'aborted' || _abortController?.signal.aborted) {
-      console.log('[VALIDATE] Aborted by user');
+  } catch (e: unknown) {
+    const errMsg = e instanceof Error ? e.message : String(e);
+    if (errMsg === 'aborted' || _abortController?.signal.aborted) {
+      logger.info({}, 'validation aborted by user');
       finishValidationRun(ctx.db, runId, 0, 0, 0, 130);
       broadcast(ctx.sseClients, 'validation:complete', { jobId: runId, exitCode: 130, total: 0, passed: 0, failed: 0, stopped: true });
     } else {
-      console.warn('[VALIDATE] Error:', e.message);
+      logger.warn({ error: errMsg }, 'validation error');
       finishValidationRun(ctx.db, runId, 0, 0, 0, 1);
-      broadcast(ctx.sseClients, 'validation:complete', { jobId: runId, error: e.message, exitCode: 1 });
+      broadcast(ctx.sseClients, 'validation:complete', { jobId: runId, error: errMsg, exitCode: 1 });
     }
   } finally {
     _validationRunning = false;
