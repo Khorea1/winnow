@@ -43,7 +43,15 @@ function getAuthToken() {
 }
 function isAuthorized(req: IncomingMessage) {
   const token = getAuthToken();
-  if (!token) return true;
+  if (!token) {
+    // In production, fail-closed: block API routes when no token is configured.
+    // This prevents accidental exposure of the dashboard API on a public port.
+    if (process.env.NODE_ENV === 'production') {
+      const urlObj = new URL(req.url || '/', 'http://localhost');
+      if (urlObj.pathname.startsWith('/api/')) return false;
+    }
+    return true;
+  }
   const auth = req.headers.authorization || '';
   if (auth === `Bearer ${token}`) return true;
   if (auth === token) return true;
