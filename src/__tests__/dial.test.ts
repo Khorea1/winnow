@@ -36,7 +36,7 @@ describe('parseHostPort', () => {
   });
 
   it('parses IPv6-like with trailing segment (2001:db8::1)', () => {
-    assert.deepEqual(parseHostPort('2001:db8::1'), { host: '2001:db8:', port: 1 });
+    assert.deepEqual(parseHostPort('2001:db8::1'), { host: '2001:db8::1', port: 443 });
   });
 
   it('returns null for empty input', () => {

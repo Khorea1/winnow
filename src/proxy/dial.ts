@@ -39,10 +39,12 @@ export function parseHostPort(input: string, defaultPort = 443): { host: string;
   if (input.includes('::')) {
     const lastColon = input.lastIndexOf(':');
     const portStr = input.slice(lastColon + 1);
-    // If there's a numeric port suffix and we're past the :: sequence,
-    // treat the part before the last colon as the host.
     if (/^\d+$/.test(portStr) && lastColon > 1) {
       const host = input.slice(0, lastColon);
+      // If host ends with ':', this is a bare IPv6 address, not host:port
+      if (host.endsWith(':')) {
+        return { host: input, port: defaultPort };
+      }
       const port = parseInt(portStr, 10);
       return { host, port: Number.isFinite(port) ? port : defaultPort };
     }
