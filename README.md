@@ -1,8 +1,29 @@
 # Winnow
 
+[![CI](https://github.com/Khorea1/winnow/actions/workflows/ci.yml/badge.svg)](https://github.com/Khorea1/winnow/actions/workflows/ci.yml)
+[![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
+[![Node.js >=22](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](package.json)
+
 **A forward HTTP/S proxy that rotates across a pool of upstream proxies, scoring each one in real time and routing your traffic through the healthiest proxies available. One stable endpoint in front of dozens, hundreds, or thousands of proxies — a "proxy of proxies".**
 
 Winnow classifies every failure as *fatal* (the proxy itself is structurally dead — refusals, DNS, TLS/cert, SOCKS protocol errors) or *transient* (the proxy is reachable but flaky — timeouts, upstream 5xx, resets). It freezes dead proxies, briefly bans flaky ones, scores the survivors, and keeps your requests flowing through the best of the pool. A persistent SQLite health database, a multi-stage validation pipeline, and a live dashboard ship with it.
+
+<details>
+<summary><strong>Table of contents</strong></summary>
+
+- [Why "Winnow"](#why-winnow)
+- [Features](#features)
+- [How it works](#how-it-works)
+- [Quick start](#quick-start)
+- [Configuration](#configuration)
+- [CLI](#cli)
+- [API endpoints](#api-endpoints)
+- [Proxy file format](#proxy-file-format)
+- [Health state](#health-state)
+- [Project structure](#project-structure)
+- [License](#license)
+
+</details>
 
 ---
 
@@ -258,25 +279,27 @@ Short flags: `-p` port, `-f` proxyfile, `-c` config, `-v` validationmode, `-t` t
 
 ### Standalone validator CLI flags
 
+Any flag left unset falls back to the matching `validation*` field in `config.json`, then to the built-in default — the CLI reads the same config file the server does, so tuning `config.json` affects both.
+
 ```
---file <path>         Proxy file to validate
---mode <mode>         quick | standard | strict | tcp-only | stream
---threads <n>         Concurrent validation threads
---timeout <ms>        Request timeout
---base-url <url>      Base URL for HTTP checks
---max-latency <ms>    Maximum acceptable latency
---connect-timeout <s> TCP connect timeout (seconds)
---ttfb-ratio <n>      TTFB ratio threshold
---max-gap <ms>        Time gap check threshold
---json <path>         Write JSON results to file
---output <path>       Write valid proxies to file (one per line)
---insecure            Allow invalid TLS certificates
---strict-tls          Reject self-signed / unauthorized certificates
---anon-check          Verify proxy anonymity (X-Forwarded-For)
---throttle <ms>       Minimum delay between checks
---tls-host <host>     Target for explicit TLS check
---tls-port <port>     Port for explicit TLS check (default 443)
---help                Show help
+-f, --file <path>         Proxy file to validate
+-m, --mode <mode>         quick | standard | strict | tcp-only | stream
+-t, --threads <n>         Concurrent validation threads
+    --timeout <ms>        Request timeout (alias for --max-latency)
+-b, --base-url <url>      Base URL for HTTP checks
+    --max-latency <ms>    Maximum acceptable latency
+    --connect-timeout <s> TCP connect timeout (seconds)
+    --ttfb-ratio <n>      TTFB ratio threshold
+    --max-gap <ms>        Time gap check threshold
+    --json <path>         Write JSON results to file
+-o, --output <path>       Write valid proxies to file (one per line)
+-i, --insecure            Allow invalid TLS certificates
+-s, --strict-tls          Reject self-signed / unauthorized certificates
+-a, --anon-check          Verify proxy anonymity (X-Forwarded-For)
+-T, --throttle <ms>       Minimum delay between checks
+    --tls-host <host>     Target for explicit TLS check
+    --tls-port <port>     Port for explicit TLS check (default 443)
+-h, --help                Show help
 ```
 
 ---
@@ -340,8 +363,6 @@ Health data is persisted in SQLite (`<proxyfile-basename>.db`, e.g. `proxies.db`
 │   └── __tests__/            Unit tests (node:test)
 ├── public/
 │   └── dashboard.html        Dashboard UI (PT/EN, auto-detected)
-├── docs/
-│   └── ideas/                Design memos (e.g. proxy-health-tiers.md)
 ├── Dockerfile                Multi-stage production build
 ├── docker-compose.yml        Example deployment
 └── config.example.json       Documented configuration template
