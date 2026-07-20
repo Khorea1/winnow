@@ -158,6 +158,14 @@ export function socks5Connect(upstream: ParsedProxy, tHost: string, tPort: numbe
     sock.on('data', (data: Buffer) => {
       if (done) return;
       if (stage === 0) {
+        // Validate SOCKS5 version byte — reject non-SOCKS5 responses
+        if (data.length < 2 || data[0] !== 0x05) {
+          done = true;
+          clearTimeout(to);
+          sock.destroy();
+          reject(new Error('socks5 invalid version'));
+          return;
+        }
         if (data[1] === 0x02) {
           const user = u.username;
           const pass = u.password;

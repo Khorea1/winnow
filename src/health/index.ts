@@ -280,6 +280,9 @@ export class HealthStore extends EventEmitter {
         if (e.frozenUntil > 0) {
           e.frozenUntil = 0;
           e.bannedUntil = demotedTo;
+          // Decay fatal errors so one more fatal re-freezes
+          e.fatalErrors = Math.floor(e.fatalErrors / 2);
+          e.errors = 0;
           count++;
           // LOG: emit unban event on boot thaw
           EventLog.safePush(this._eventLog, {

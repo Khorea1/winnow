@@ -185,8 +185,7 @@ export function loadConfig(): RotatorConfig {
       try {
         if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       } catch {}
-      fs.writeFileSync(configPath, `${JSON.stringify(DEFAULTS, null, 2)}\n`);
-      console.log(`[CONFIG] Created ${configPath} with defaults`);
+      fs.writeFileSync(configPath, `${JSON.stringify(sanitize({ ...DEFAULTS }), null, 2)}\n`);
     }
   } catch (e: unknown) {
     console.warn('[CONFIG] Error reading config:', (e as Error).message);
