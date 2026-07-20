@@ -37,8 +37,8 @@ export function parseProxyForTcp(proxyLine: string): { host: string; port: numbe
     const u = new URL(line);
     const host = u.hostname;
     const port = parseInt(u.port, 10);
-    if (!host || !port) return null;
-    return { host, port };
+    if (!host || (u.port && !port)) return null;
+    return { host, port: port || 80 };
   } catch {
     return null;
   }
