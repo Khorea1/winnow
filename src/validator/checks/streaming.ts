@@ -36,9 +36,9 @@ export async function streamingCheck(
     let lastChunkTime = 0;
     let maxGap = 0;
     let chunks = 0;
-    let _buf = '';
     let status = 0;
     let headersEnd = -1;
+    let headerBuf = '';
 
     const timer = setTimeout(() => {
       if (!done) {
@@ -54,17 +54,30 @@ export async function streamingCheck(
       const now = Date.now();
       if (firstByte === 0) firstByte = now;
       if (headersEnd === -1) {
-        const tmp = d.toString();
-        const idx = tmp.indexOf('\r\n\r\n');
+        headerBuf += d.toString();
+        const idx = headerBuf.indexOf('\r\n\r\n');
         if (idx !== -1) {
-          const firstLine = tmp.split('\r\n')[0];
+          const firstLine = headerBuf.slice(0, idx).split('\r\n')[0] || '';
           status = parseInt(firstLine.split(' ')[1] || '0', 10);
+          let bodyPart = headerBuf.slice(idx + 4);
+
+          while (status === 100 && bodyPart.indexOf('\r\n\r\n') !== -1) {
+            const nextIdx = bodyPart.indexOf('\r\n\r\n');
+            const nextHeader = bodyPart.slice(0, nextIdx);
+            const nextFirstLine = nextHeader.split('\r\n')[0] || '';
+            status = parseInt(nextFirstLine.split(' ')[1] || '0', 10);
+            bodyPart = bodyPart.slice(nextIdx + 4);
+          }
+
+          if (status === 100 && bodyPart.indexOf('\r\n\r\n') === -1) {
+            headerBuf = bodyPart;
+            return;
+          }
+
           headersEnd = 1;
-          const bodyPart = tmp.slice(idx + 4);
           if (bodyPart.trim()) {
             chunks++;
             lastChunkTime = now;
-            _buf += bodyPart;
           }
         }
       } else {

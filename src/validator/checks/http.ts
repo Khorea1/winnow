@@ -113,24 +113,35 @@ export async function httpCheck(
       done = true;
       clearTimeout(timeout);
       const totalLatency = Date.now() - start;
-      const full = buf.toString();
-      const headerEndIdx = full.indexOf('\r\n\r\n');
+      let full = buf.toString();
+      let headerEndIdx = full.indexOf('\r\n\r\n');
       let headerStr = '';
       let bodyStr = '';
       let status = 0;
-      if (headerEndIdx !== -1) {
+
+      while (headerEndIdx !== -1) {
         headerStr = full.slice(0, headerEndIdx);
         bodyStr = full.slice(headerEndIdx + 4);
         const firstLine = headerStr.split('\r\n')[0] || '';
         status = parseInt(firstLine.split(' ')[1] || '0', 10);
-      } else {
+
+        if (status === 100) {
+          // Skip 100-Continue and look for the next header block
+          full = bodyStr;
+          headerEndIdx = full.indexOf('\r\n\r\n');
+        } else {
+          break;
+        }
+      }
+
+      if (headerEndIdx === -1) {
         bodyStr = full;
       }
 
       // Anon check
       if (opts.anonCheck && status === 200) {
         const lower = (headerStr + bodyStr).toLowerCase();
-        if (lower.includes('x-forwarded-for') || lower.includes('via:') || bodyStr.includes('"X-Forwarded-For"')) {
+        if (lower.includes('x-forwarded-for') || lower.includes('via:')) {
           try {
             socket.destroy();
           } catch {}

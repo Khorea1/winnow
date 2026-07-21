@@ -345,10 +345,31 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
           const combined = respBuf.length > 0 ? Buffer.concat([respBuf, chunk]) : chunk;
           const idx = combined.indexOf('\r\n\r\n');
           if (idx !== -1) {
-            const headerStr = combined.slice(0, idx).toString();
-            const lines = headerStr.split('\r\n');
-            const firstLine = lines[0];
+            let headerStr = combined.slice(0, idx).toString();
+            let lines = headerStr.split('\r\n');
+            let firstLine = lines[0] || '';
             statusCode = parseInt(firstLine.split(' ')[1] || '0', 10);
+            let rest = combined.slice(idx + 4);
+
+            // Handle 100-Continue — consume interim responses until we get a final one
+            while (statusCode === 100 && rest.length > 0) {
+              const nextIdx = rest.indexOf('\r\n\r\n');
+              if (nextIdx === -1) {
+                respBuf = rest;
+                return;
+              }
+              headerStr = rest.slice(0, nextIdx).toString();
+              lines = headerStr.split('\r\n');
+              firstLine = lines[0] || '';
+              statusCode = parseInt(firstLine.split(' ')[1] || '0', 10);
+              rest = rest.slice(nextIdx + 4);
+            }
+
+            if (statusCode === 100 && rest.length === 0) {
+              respBuf = Buffer.alloc(0);
+              return;
+            }
+
             if (statusCode >= 500 && !requestFailed) {
               EventLog.safePush(el, {
                 type: 'http',
@@ -376,10 +397,9 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
                 }
               }
             }
-            const rest = combined.slice(idx + 4);
             try {
               res.writeHead(statusCode, headers);
-              res.write(rest);
+              if (rest.length) res.write(rest);
             } catch {}
             upstreamBytes += rest.length;
             headerParsed = true;
