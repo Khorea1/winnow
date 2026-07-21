@@ -61,7 +61,17 @@ const config = loadConfig();
 if (cliPort !== undefined) config.port = cliPort;
 if (cliProxyFile !== undefined) config.proxyFile = cliProxyFile;
 if (cliTimeout !== undefined) config.timeout = cliTimeout;
-if (cliValidationMode !== undefined) config.validationMode = cliValidationMode as typeof config.validationMode;
+
+const validModes = ['quick', 'standard', 'strict', 'stream', 'tcp-only'];
+if (cliValidationMode !== undefined) {
+  const mode = String(cliValidationMode).toLowerCase();
+  if (validModes.includes(mode)) {
+    config.validationMode = mode as typeof config.validationMode;
+  } else {
+    // Log a warning and fall back to the config.json / default instead of applying an invalid mode silently
+    console.warn(`[CONFIG] Invalid validation mode '${cliValidationMode}' provided via CLI/env. Falling back to config.json.`);
+  }
+}
 
 // Derive DB path from proxy file path
 const dbPath = `${path.resolve(config.proxyFile).replace(/\.[^.]+$/, '')}.db`;

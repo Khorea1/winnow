@@ -104,13 +104,11 @@ function readBody(req: IncomingMessage, res: ServerResponse): Promise<string | n
         res.end(JSON.stringify({ error: `Body too large - max ${MAX_BODY_SIZE}` }));
       } catch {}
       req.destroy();
+      resolve(null); // Resolve immediately to prevent dangling promises
     }
   });
   req.on('end', () => {
-    if (tooLarge) {
-      resolve(null);
-      return;
-    }
+    if (tooLarge) return;
     const body = Buffer.concat(chunks).toString('utf8');
     resolve(body);
   });
@@ -120,12 +118,7 @@ function readBody(req: IncomingMessage, res: ServerResponse): Promise<string | n
 function serveDashboard(res: ServerResponse) {
   try {
     if (!_dashboardHtml) {
-      // try dist, src, public
-      const candidates = [
-        path.join(import.meta.dirname, '../../public/dashboard.html'),
-        path.join(import.meta.dirname, '../dashboard/dashboard.html'),
-        path.join(process.cwd(), 'public/dashboard.html'),
-      ];
+      const candidates = [_DASHBOARD_PATH, path.join(process.cwd(), 'public/dashboard.html')];
       for (const c of candidates) {
         if (fs.existsSync(c)) {
           _dashboardHtml = fs.readFileSync(c, 'utf8');
