@@ -90,6 +90,7 @@ const logger = createLogger('main');
 
 // Load proxies
 function load() {
+  if (_hcRunning) return;
   try {
     const list = fs
       .readFileSync(config.proxyFile, 'utf8')
@@ -131,6 +132,7 @@ function shutdown(reason = 'SIGTERM') {
   if (shuttingDown) return;
   shuttingDown = true;
   logger.info({ reason }, 'shutting down');
+  clearTimeout(_reloadTimer);
   // Clear healthcheck interval — next tick sees shuttingDown and bails
   if (_hcInterval !== undefined) {
     clearInterval(_hcInterval);
@@ -145,18 +147,24 @@ function shutdown(reason = 'SIGTERM') {
   }
   // Close server first — stop accepting new connections, drain in-flight
   if (server) {
-    server.close(() => logger.info({}, 'server closed'));
+    server.close(() => {
+      health.stop();
+      db.close();
+      try {
+        const pidPath = path.join(resolveDataDir(), '.winnow.pid');
+        fs.unlinkSync(pidPath);
+      } catch {}
+      setTimeout(() => process.exit(hadUncaughtException ? 1 : 0), 10_000).unref();
+    });
+  } else {
+    health.stop();
+    db.close();
+    try {
+      const pidPath = path.join(resolveDataDir(), '.winnow.pid');
+      fs.unlinkSync(pidPath);
+    } catch {}
+    setTimeout(() => process.exit(hadUncaughtException ? 1 : 0), 10_000).unref();
   }
-  // Then persist health state (in-flight failures after this are transient-only)
-  health.stop();
-  db.close();
-  // Remove PID file
-  try {
-    const pidPath = path.join(resolveDataDir(), '.winnow.pid');
-    fs.unlinkSync(pidPath);
-  } catch {}
-  // Hard exit after 10s if graceful close stalls
-  setTimeout(() => process.exit(hadUncaughtException ? 1 : 0), 10_000).unref();
 }
 process.on('uncaughtException', (err) => {
   hadUncaughtException = true;
@@ -206,11 +214,15 @@ load();
 // Watch for file changes (inotify on Linux — instant vs polling)
 // Debounce: fs.watch can fire multiple events for a single save
 let _reloadTimer: NodeJS.Timeout | undefined;
+const watchDir = path.dirname(path.resolve(config.proxyFile));
+const watchFile = path.basename(config.proxyFile);
 try {
-  fileWatcher = fs.watch(config.proxyFile, () => {
-    clearTimeout(_reloadTimer);
-    _reloadTimer = setTimeout(() => load(), 300);
+  fileWatcher = fs.watch(watchDir, (eventType, filename) => {
+    if (filename === watchFile) {
+      clearTimeout(_reloadTimer);
+      _reloadTimer = setTimeout(() => load(), 300);
+    }
   });
 } catch (e: unknown) {
-  logger.warn({ file: config.proxyFile, error: e instanceof Error ? e.message : String(e) }, 'could not watch proxy file');
+  logger.warn({ dir: watchDir, error: e instanceof Error ? e.message : String(e) }, 'could not watch proxy directory');
 }

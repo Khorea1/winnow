@@ -339,7 +339,13 @@ export function registerDashboard(
             custom = {};
           }
         }
-        startValidation(res, { cfgRef, sseClients, health, db, custom });
+        startValidation(res, { cfgRef, sseClients, health, db, custom }).catch((err) => {
+          logger.error({ error: err instanceof Error ? err.message : String(err) }, 'validation failed to start');
+          if (!res.headersSent) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Validation failed to start' }));
+          }
+        });
         return;
       }
 

@@ -223,7 +223,7 @@ export class HealthStore extends EventEmitter {
     const wasFrozen = star.frozenUntil > now;
     applyFailure(star, err, config, now);
     this.dirty(proxy);
-    if (target) {
+    if (target && target !== '*') {
       const te = this.getTarget(proxy, target);
       if (te) {
         const _teWasBanned = te.bannedUntil > now;
@@ -280,6 +280,7 @@ export class HealthStore extends EventEmitter {
         if (e.frozenUntil > 0) {
           e.frozenUntil = 0;
           e.bannedUntil = demotedTo;
+          this._dirty.add(`${proxy}\x00${target}`);
           // Decay fatal errors so one more fatal re-freezes
           e.fatalErrors = Math.floor(e.fatalErrors / 2);
           e.errors = 0;
@@ -387,12 +388,15 @@ export class HealthStore extends EventEmitter {
 
   private _flush() {
     if (this._deleted.size) {
+      const failed: string[] = [];
       for (const p of this._deleted) {
         try {
           removeProxyHealth(this.db, p);
-        } catch {}
+        } catch {
+          failed.push(p);
+        }
       }
-      this._deleted.clear();
+      this._deleted = new Set(failed);
     }
     if (!this._dirty.size) return;
     const rows: Record<string, unknown>[] = [];

@@ -52,8 +52,10 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
         return fail(trimmed, 'http', `latency ${res.latency}ms > ${opts.maxLatency}ms`, { httpCode: res.status, latency: res.latency });
       }
 
-      // Invalid content - expecting JSON with origin from httpbin /ip
-      if (!res.body.includes('origin')) {
+      // Only enforce 'origin' body content check if using httpbin.
+      // Custom baseUrls just need a 200 OK within the latency budget.
+      const isHttpbin = opts.baseUrl.includes('httpbin.org');
+      if (isHttpbin && !res.body.includes('origin')) {
         return fail(trimmed, 'http', 'invalid content', { httpCode: res.status, latency: res.latency });
       }
     } catch (e: unknown) {
@@ -87,13 +89,15 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
       if (msg.includes('TLS invalid') || msg.includes('self-signed') || msg.includes('certificate')) {
         return fail(trimmed, 'tls', msg);
       }
+      // Any other error (timeout, network) means TLS check failed
+      return fail(trimmed, 'tls', `TLS check failed: ${msg}`);
     }
   }
 
   if (abortSignal?.aborted) return fail(trimmed, 'cancelled', 'aborted');
 
   // Stage B - light streaming
-  if (opts.mode === 'standard' || opts.mode === 'strict') {
+  if (opts.mode === 'standard' || opts.mode === 'strict' || opts.mode === 'stream') {
     try {
       const streamUrl = `${opts.baseUrl.replace(/\/$/, '')}/stream/5?delay=0.2`;
       const res = await streamingCheck(trimmed, streamUrl, {

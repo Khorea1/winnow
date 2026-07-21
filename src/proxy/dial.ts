@@ -201,6 +201,7 @@ export function socks5Connect(upstream: ParsedProxy, tHost: string, tPort: numbe
         sock.write(Buffer.concat([Buffer.from([0x05, 0x01, 0x00, 0x03, hb.length]), hb, pb]));
         stage = 2;
       } else if (stage === 1) {
+        if (data.length < 2) return;
         if (data[1] !== 0x00) {
           done = true;
           clearTimeout(to);
@@ -214,6 +215,7 @@ export function socks5Connect(upstream: ParsedProxy, tHost: string, tPort: numbe
         sock.write(Buffer.concat([Buffer.from([0x05, 0x01, 0x00, 0x03, hb.length]), hb, pb]));
         stage = 2;
       } else {
+        if (data.length < 2) return;
         if (data[1] !== 0x00) {
           done = true;
           clearTimeout(to);
