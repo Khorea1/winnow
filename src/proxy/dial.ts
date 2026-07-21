@@ -1,3 +1,4 @@
+import dns from 'node:dns';
 import net from 'node:net';
 
 export interface ParsedProxy {
@@ -72,7 +73,7 @@ export function httpConnect(upstream: ParsedProxy, tHost: string, tPort: number,
   return new Promise((resolve, reject) => {
     const u = upstream.url;
     const portNum = parseInt(u.port, 10);
-    const pp = !isNaN(portNum) && portNum > 0 ? portNum : 8080;
+    const pp = !Number.isNaN(portNum) && portNum > 0 ? portNum : 8080;
     const user = u.username;
     // Uses string concatenation instead of a nested template literal, which broke tsc.
     let auth = '';
@@ -90,7 +91,14 @@ export function httpConnect(upstream: ParsedProxy, tHost: string, tPort: number,
         reject(new Error('timeout http'));
       }
     }, timeout);
-    sock.on('connect', () => {
+    sock.on('connect', async () => {
+      if (tHost.includes('\r') || tHost.includes('\n')) {
+        done = true;
+        clearTimeout(to);
+        sock.destroy();
+        reject(new Error('invalid target host'));
+        return;
+      }
       const req = `CONNECT ${tHost}:${tPort} HTTP/1.1\r\nHost: ${tHost}:${tPort}\r\n${auth}Connection: keep-alive\r\n\r\n`;
       sock.write(req);
     });
@@ -183,7 +191,7 @@ export function socks5Connect(upstream: ParsedProxy, tHost: string, tPort: numbe
   return new Promise((resolve, reject) => {
     const u = upstream.url;
     const portNum = parseInt(u.port, 10);
-    const pp = !isNaN(portNum) && portNum > 0 ? portNum : 1080;
+    const pp = !Number.isNaN(portNum) && portNum > 0 ? portNum : 1080;
     const sock = net.connect(pp, u.hostname);
     let done = false;
     const to = setTimeout(() => {
@@ -198,6 +206,7 @@ export function socks5Connect(upstream: ParsedProxy, tHost: string, tPort: numbe
       if (u.username) sock.write(Buffer.from([0x05, 0x02, 0x00, 0x02]));
       else sock.write(Buffer.from([0x05, 0x01, 0x00]));
     });
+    let replyBuf = Buffer.alloc(0);
     sock.on('data', (data: Buffer) => {
       if (done) return;
       if (stage === 0) {
@@ -252,26 +261,23 @@ export function socks5Connect(upstream: ParsedProxy, tHost: string, tPort: numbe
         sock.write(socks5AddrBuffer(tHost, tPort));
         stage = 2;
       } else {
-        if (data.length < 2) return;
-        if (data[0] !== 0x05) {
+        replyBuf = Buffer.concat([replyBuf, data]);
+        if (replyBuf.length < 2) return;
+        if (replyBuf[0] !== 0x05) {
           done = true;
           clearTimeout(to);
           sock.destroy();
           reject(new Error('SOCKS5 invalid version'));
           return;
         }
-        if (data.length < 10) {
+        if (replyBuf.length < 10) return;
+        if (replyBuf[1] !== 0x00) {
+          const err = new Error(`socks5 connect fail ${replyBuf[1]}`);
+          Object.defineProperty(err, 'socksReply', { value: replyBuf[1] });
           done = true;
           clearTimeout(to);
           sock.destroy();
-          reject(new Error('SOCKS5 truncated reply'));
-          return;
-        }
-        if (data[1] !== 0x00) {
-          done = true;
-          clearTimeout(to);
-          sock.destroy();
-          reject(new Error(`socks5 connect fail ${data[1]}`));
+          reject(err);
           return;
         }
         done = true;
@@ -297,6 +303,9 @@ export function socks5Connect(upstream: ParsedProxy, tHost: string, tPort: numbe
 }
 
 export async function dial(upstream: ParsedProxy, h: string, p: number, timeout: number) {
+  if (!['http', 'socks5', 'socks'].includes(upstream.proto)) {
+    throw new Error(`unsupported proxy protocol: ${upstream.proto}`);
+  }
   if (upstream.proto === 'socks5') return socks5Connect(upstream, h, p, timeout);
   if (upstream.proto === 'socks4' || upstream.proto === 'socks4a') throw new Error('SOCKS4 not supported');
   return httpConnect(upstream, h, p, timeout);
@@ -396,4 +405,17 @@ export function isBlockedTarget(host: string): boolean {
   // Hostnames that resolve to private IPs (e.g., via DNS rebinding or CNAME)
   // are not caught here. Consider adding `dns.lookup` validation for production.
   return false;
+}
+// ── Post-DNS SSRF validation ──────────────────────────────────────────
+// Best-effort: resolves the hostname and checks the resolved IP(s) against
+// blocked ranges. DNS rebinding is still theoretically possible during the
+// window between lookup and connect, so this is defense-in-depth, not a
+// guarantee.
+async function _isBlockedTargetDNS(host: string, lookupFn: (host: string) => Promise<{ address: string }> = dns.promises.lookup): Promise<boolean> {
+  try {
+    const { address } = await lookupFn(host);
+    return isBlockedTarget(address);
+  } catch {
+    return false;
+  }
 }

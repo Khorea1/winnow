@@ -43,7 +43,7 @@ const FATAL_ERR_CODES = new Set([
 // Only patterns NOT covered by FATAL_ERR_CODES are kept: TLS/SSL errors,
 // certificate issues, handshake failures, SOCKS protocol mentions, and
 // generic protocol errors often lack a standard err.code.
-const FATAL_MSG_REGEX = /\b(?:TLS|SSL|certificate|self[- ]?signed|handshake|SOCKS|protocol error)\b/i;
+const FATAL_MSG_REGEX = /\b(?:TLS|SSL|certificate|self[- ]?signed|handshake|SOCKS|protocol error)/i;
 // SOCKSv5 reply codes indicating the proxy itself rejected the request.
 const SOCKS_FATAL_REPLIES = new Set([0x01, 0x02, 0x03, 0x04, 0x05, 0x07, 0x08]);
 
@@ -88,8 +88,7 @@ export function applyFailure(
 }
 /**
  * Record a success. Decrements errors, updates latency EMA, clears bannedUntil.
- * Does NOT reset fatalErrors or frozenUntil — only the boot-time prune pass
- * in HealthStore unfreezes proxies.
+ * Does NOT reset frozenUntil — only the boot-time prune pass in HealthStore unfreezes proxies.
  */
 export function applySuccess(h: HealthEntry, latency: number, now: number) {
   h.latency = h.latency === 9999 ? latency : Math.floor(h.latency * 0.7 + latency * 0.3);
@@ -187,6 +186,9 @@ export class HealthStore extends EventEmitter {
    * `*` aggregate, mirroring the failure path's two-entry update. When target
    * is undefined, only the `*` aggregate is touched.
    */
+  // DESIGN NOTE: successes on ANY target clear the aggregate ban — intentional.
+  // A proxy that works for ANY target is better than one that works for none.
+
   recordSuccess(proxy: string, target: string | undefined, latency: number, now = Date.now()) {
     const star = ensureStarEntry(this, proxy);
     applySuccess(star, latency, now);
@@ -370,7 +372,7 @@ export class HealthStore extends EventEmitter {
   }
 
   static computeScore(e: HealthEntry, now = Date.now()): number {
-    if (e.frozenUntil > 0 && now < e.frozenUntil) return Infinity;
+    if ((e.frozenUntil > 0 && now < e.frozenUntil) || (e.bannedUntil > 0 && now < e.bannedUntil)) return Infinity;
     return e.latency + e.errors * 2000 + e.fatalErrors * 10000 - e.successes * 50;
   }
 
