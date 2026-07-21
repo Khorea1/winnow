@@ -248,13 +248,15 @@ export async function dial(upstream: ParsedProxy, h: string, p: number, timeout:
 export function isBlockedTarget(host: string): boolean {
   // Hostname-based blocking (SSRF prevention for internal hostnames)
   const lower = host.toLowerCase();
-  if (lower === 'localhost' || lower === 'localhost.localdomain' || lower === '127.0.0.1' || lower === '::1' || lower === '0.0.0.0') return true;
+  if (lower === 'localhost' || lower === 'localhost.localdomain' || lower === '127.0.0.1' || lower === '::1' || lower === '0.0.0.0' || lower === '::')
+    return true;
   if (lower.endsWith('.local') || lower.endsWith('.internal')) return true;
 
+  // IPv4 checks
   const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(host);
   if (m) {
     const [a, b] = [parseInt(m[1], 10), parseInt(m[2], 10)];
-    if (a === 127) return true; // loopback
+    if (a === 127 || a === 0) return true; // loopback / 0.0.0.0/8
     if (a === 169 && b === 254) return true; // link-local (incl. AWS IMDS)
     if (a === 10) return true; // RFC 1918 10/8
     if (a === 100 && b >= 64 && b <= 127) return true; // RFC 6598 CGNAT
@@ -264,18 +266,26 @@ export function isBlockedTarget(host: string): boolean {
 
   // IPv6 checks
   if (net.isIPv6(host)) {
-    // IPv6 loopback (::1 and full form)
-    if (lower === '::1' || lower === '0:0:0:0:0:0:0:1') return true;
-    // IPv4-mapped IPv6: block all private ranges
-    const v4mapped = lower.replace(/^::ffff:/, '').replace(/^0:0:0:0:0:0:ffff:/, '');
-    if (v4mapped !== lower && /^\d+\.\d+\.\d+\.\d+$/.test(v4mapped)) {
-      const parts = v4mapped.split('.').map(Number);
-      if (parts[0] === 0 || parts[0] === 127) return true;
-      if (parts[0] === 169 && parts[1] === 254) return true;
-      if (parts[0] === 10) return true;
-      if (parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127) return true;
-      if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
-      if (parts[0] === 192 && parts[1] === 168) return true;
+    // IPv6 loopback full form
+    if (lower === '0:0:0:0:0:0:0:1') return true;
+
+    // IPv4-mapped IPv6 — block all private ranges, including hex format
+    const V4MAPPED_PREFIX = '::ffff:';
+    if (lower.startsWith(V4MAPPED_PREFIX)) {
+      const v4part = lower.slice(V4MAPPED_PREFIX.length);
+      // Dot-decimal: ::ffff:127.0.0.1
+      if (net.isIPv4(v4part)) {
+        return isBlockedTarget(v4part);
+      }
+      // Hex-encoded: ::ffff:7f00:1 → 127.0.0.1
+      if (/^[0-9a-f]{1,4}:[0-9a-f]{1,4}$/.test(v4part)) {
+        const [h1, h2] = v4part.split(':').map((h) => parseInt(h || '0', 16));
+        const a = (h1 >> 8) & 0xff;
+        const b = h1 & 0xff;
+        const c = (h2 >> 8) & 0xff;
+        const d = h2 & 0xff;
+        return isBlockedTarget(`${a}.${b}.${c}.${d}`);
+      }
     }
   }
 
