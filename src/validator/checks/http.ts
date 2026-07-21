@@ -169,8 +169,13 @@ export async function httpCheck(
       }
       if (headersFound && isChunked) {
         const headerEnd = buf.indexOf('\r\n\r\n') + 4;
-        if (headerEnd > 3 && buf.slice(headerEnd).includes(Buffer.from('0\r\n\r\n'))) {
-          processResponse();
+        if (headerEnd > 3) {
+          const body = buf.slice(headerEnd);
+          // Check if the last chunk is a zero-length chunk (trailing 0\r\n)
+          const trailingZero = body.lastIndexOf(Buffer.from('\r\n0\r\n'));
+          if (trailingZero !== -1 && trailingZero + 5 >= body.length - 2) {
+            processResponse();
+          }
         }
       }
     };
@@ -197,6 +202,9 @@ export async function httpCheck(
       if (!done) {
         done = true;
         clearTimeout(timeout);
+        try {
+          socket.destroy();
+        } catch {}
         reject(e);
       }
     }

@@ -14,6 +14,7 @@ function fail(proxy: string, stage: string, error: string, extra?: Partial<Proxy
 // Helper: race a promise against an abort signal
 function withAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(new Error('aborted'));
   return new Promise<T>((resolve, reject) => {
     const onAbort = () => reject(new Error('aborted'));
     signal.addEventListener('abort', onAbort, { once: true });
@@ -45,6 +46,7 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
   try {
     await withAbort(tcpCheck(tcpInfo.host, tcpInfo.port, opts.connectTimeout * 1000), abortSignal);
   } catch {
+    if (abortSignal?.aborted) return fail(trimmed, 'cancelled', 'aborted');
     return fail(trimmed, 'tcp', 'TCP unreachable', { httpCode: 0 });
   }
 
@@ -80,6 +82,7 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
         return fail(trimmed, 'http', 'invalid content', { httpCode: res.status, latency: res.latency });
       }
     } catch (e: unknown) {
+      if (abortSignal?.aborted) return fail(trimmed, 'cancelled', 'aborted');
       const err = e instanceof Error ? e : new Error(String(e));
       const errCode = (err as Error & { code?: string }).code || '';
       const msg = err.message;
@@ -111,6 +114,7 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
         return fail(trimmed, 'tls', `TLS invalid: ${tlsRes.error}`);
       }
     } catch (e: unknown) {
+      if (abortSignal?.aborted) return fail(trimmed, 'cancelled', 'aborted');
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes('TLS invalid') || msg.includes('self-signed') || msg.includes('certificate')) {
         return fail(trimmed, 'tls', msg);
@@ -142,6 +146,7 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
         return fail(trimmed, 'stream', `insufficient chunks ${res.chunks}/5`, { chunks: res.chunks, ttfb: res.ttfb });
       }
     } catch (e: unknown) {
+      if (abortSignal?.aborted) return fail(trimmed, 'cancelled', 'aborted');
       return fail(trimmed, 'stream', e instanceof Error ? e.message : String(e));
     }
   }
@@ -167,6 +172,7 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
         return fail(trimmed, 'stream20', `insufficient chunks ${res.chunks}/20`, { chunks: res.chunks });
       }
     } catch (e: unknown) {
+      if (abortSignal?.aborted) return fail(trimmed, 'cancelled', 'aborted');
       return fail(trimmed, 'stream20', e instanceof Error ? e.message : String(e));
     }
   }
@@ -201,7 +207,19 @@ export async function runValidation(
 
         // Per-worker throttle — with N concurrent workers, effective rate is N / throttle
         if (opts.throttle > 0) {
-          await new Promise((r) => setTimeout(r, opts.throttle));
+          await new Promise<void>((r) => {
+            const tid = setTimeout(r, opts.throttle);
+            if (abortSignal) {
+              abortSignal.addEventListener(
+                'abort',
+                () => {
+                  clearTimeout(tid);
+                  r();
+                },
+                { once: true },
+              );
+            }
+          });
         }
         if (abortSignal?.aborted) break;
 
@@ -211,7 +229,7 @@ export async function runValidation(
           const displayResult = { ...res, proxy: sanitizedProxy };
           results.push(displayResult);
           if (res.valid) valid.push(res.proxy);
-          else invalid.push({ proxy: sanitizedProxy, reason: res.error || 'error' });
+          else invalid.push({ proxy: res.proxy, reason: res.error || 'error' });
           done++;
           onProgress?.(displayResult, { total, done, valid: valid.length, invalid: invalid.length });
           logger.debug(
@@ -232,7 +250,7 @@ export async function runValidation(
           const sanitizedProxy = proxy.replace(/\/\/[^@]*@/, '//***:***@');
           const r: ProxyResult = { proxy: sanitizedProxy, valid: false, error: errMsg, stage: 'unknown' };
           results.push(r);
-          invalid.push({ proxy: sanitizedProxy, reason: r.error! });
+          invalid.push({ proxy, reason: r.error! });
           done++;
           onProgress?.(r, { total, done, valid: valid.length, invalid: invalid.length });
           logger.debug(

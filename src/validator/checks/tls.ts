@@ -22,31 +22,20 @@ export async function tlsCheck(
   if (!parsedProxy) throw new Error('invalid format');
 
   const { sock } = await dial(parsedProxy, targetHost, targetPort, opts.connectTimeout * 1000);
+  const res = await tlsHandshake(sock, targetHost, { insecure: opts.insecure, timeout: opts.connectTimeout * 1000 });
 
-  try {
-    const res = await tlsHandshake(sock, targetHost, { insecure: opts.insecure, timeout: opts.connectTimeout * 1000 });
-    try {
-      sock.destroy();
-    } catch {}
+  const selfSigned = isSoftTlsError(res);
 
-    const selfSigned = isSoftTlsError(res);
-
-    if (opts.strictTLS && !res.authorized) {
-      const err = new Error(`TLS invalid/self-signed: ${res.authorizationError || 'unauthorized'}`);
-      Object.assign(err, { tlsResult: res });
-      throw err;
-    }
-
-    return {
-      authorized: res.authorized,
-      error: res.authorizationError,
-      selfSigned,
-      protocol: res.protocol,
-    };
-  } catch (e: unknown) {
-    try {
-      sock.destroy();
-    } catch {}
-    throw e;
+  if (opts.strictTLS && !res.authorized) {
+    const err = new Error(`TLS invalid/self-signed: ${res.authorizationError || 'unauthorized'}`);
+    Object.assign(err, { tlsResult: res });
+    throw err;
   }
+
+  return {
+    authorized: res.authorized,
+    error: res.authorizationError,
+    selfSigned,
+    protocol: res.protocol,
+  };
 }

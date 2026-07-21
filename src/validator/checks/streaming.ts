@@ -143,7 +143,7 @@ export async function streamingCheck(
       const total = Date.now() - start;
       const ttfb = firstByte ? firstByte - start : total;
 
-      if (status !== 0 && status !== 200) {
+      if (status !== 200) {
         try {
           sock.destroy();
         } catch {}
@@ -195,6 +195,9 @@ export async function streamingCheck(
       if (!done) {
         done = true;
         clearTimeout(timer);
+        try {
+          sock.destroy();
+        } catch {}
         reject(e instanceof Error ? e : new Error(String(e)));
       }
     }
