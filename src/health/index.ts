@@ -228,7 +228,7 @@ export class HealthStore extends EventEmitter {
    * to a finite `pruneAfterMs` ban so the proxy can come back alive. Reduce
    * fatalErrors by maxFatalErrors-1 so one more fatal reaches the threshold.
    */
-  private _pruneFrozenOnBoot(pruneAfterMs: number, fatalBanMs: number, maxFatalErrors: number) {
+  private _pruneFrozenOnBoot(pruneAfterMs: number, fatalBanMs: number, _maxFatalErrors: number) {
     const now = Date.now();
     const demotionPeriod = Math.min(pruneAfterMs, fatalBanMs * 3);
     const demotedTo = now + demotionPeriod;
@@ -240,7 +240,7 @@ export class HealthStore extends EventEmitter {
           e.bannedUntil = demotedTo;
           this._dirty.add(this._key(proxy, target));
           // Decay fatal errors so one more fatal re-freezes
-          e.fatalErrors = Math.max(0, e.fatalErrors - (maxFatalErrors - 2));
+          e.fatalErrors = Math.max(0, e.fatalErrors - 1);
           e.errors = 0;
           count++;
           // LOG: emit unban event on boot thaw
@@ -318,7 +318,7 @@ export class HealthStore extends EventEmitter {
 
   static computeScore(e: HealthEntry, now = Date.now()): number {
     if ((e.frozenUntil > 0 && now < e.frozenUntil) || (e.bannedUntil > 0 && now < e.bannedUntil)) return Infinity;
-    return e.latency + e.errors * 2000 + e.fatalErrors * 10000 - e.successes * 50;
+    return Math.max(0, e.latency + e.errors * 2000 + e.fatalErrors * 10000 - e.successes * 50);
   }
 
   private _load() {

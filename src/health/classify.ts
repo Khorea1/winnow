@@ -55,6 +55,7 @@ export function transientBanMs(errors: number, banBaseMs: number, banMultiplier:
   const mult = banMultiplier ** k;
   if (!Number.isFinite(mult)) return banMaxMs;
   const raw = banBaseMs * mult;
+  if (!Number.isSafeInteger(raw) || raw > banMaxMs) return banMaxMs;
   return Math.min(raw, banMaxMs);
 }
 
@@ -79,7 +80,7 @@ export function applyFailure(
   if (cls === 'fatal') {
     if (h.fatalErrors < config.maxFatalErrors) h.fatalErrors++;
     if (h.fatalErrors >= config.maxFatalErrors) {
-      h.frozenUntil = now + config.fatalBanMs * 3;
+      h.frozenUntil = Math.max(h.frozenUntil, now + config.fatalBanMs * 3);
     } else {
       h.bannedUntil = Math.max(h.bannedUntil, now + config.fatalBanMs);
     }
