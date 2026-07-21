@@ -139,6 +139,54 @@ describe('classifyError', () => {
     assert.equal(classifyError({ code: 'ERR_TLS_CERT_ALTNAME_INVALID' }), 'fatal');
   });
 
+  it('EADDRNOTAVAIL -> fatal', () => {
+    assert.equal(classifyError({ code: 'EADDRNOTAVAIL' }), 'fatal');
+  });
+
+  it('ENETUNREACH -> fatal', () => {
+    assert.equal(classifyError({ code: 'ENETUNREACH' }), 'fatal');
+  });
+
+  it('EHOSTUNREACH -> fatal', () => {
+    assert.equal(classifyError({ code: 'EHOSTUNREACH' }), 'fatal');
+  });
+
+  it('CERT_HAS_EXPIRED -> fatal', () => {
+    assert.equal(classifyError({ code: 'CERT_HAS_EXPIRED' }), 'fatal');
+  });
+
+  it('CERT_NOT_YET_VALID -> fatal', () => {
+    assert.equal(classifyError({ code: 'CERT_NOT_YET_VALID' }), 'fatal');
+  });
+
+  it('DEPTH_ZERO_SELF_SIGNED_CERT -> fatal', () => {
+    assert.equal(classifyError({ code: 'DEPTH_ZERO_SELF_SIGNED_CERT' }), 'fatal');
+  });
+
+  it('UNABLE_TO_VERIFY_LEAF_SIGNATURE -> fatal', () => {
+    assert.equal(classifyError({ code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' }), 'fatal');
+  });
+
+  it('UNABLE_TO_GET_ISSUER_CERT_LOCALLY -> fatal', () => {
+    assert.equal(classifyError({ code: 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY' }), 'fatal');
+  });
+
+  it('ERR_SSL_DECRYPTION_FAILED -> fatal', () => {
+    assert.equal(classifyError({ code: 'ERR_SSL_DECRYPTION_FAILED' }), 'fatal');
+  });
+
+  it('ERR_TLS_HANDSHAKE_TIMEOUT -> fatal', () => {
+    assert.equal(classifyError({ code: 'ERR_TLS_HANDSHAKE_TIMEOUT' }), 'fatal');
+  });
+
+  it('ERR_TLS_INVALID_PROTOCOL_METHOD -> fatal', () => {
+    assert.equal(classifyError({ code: 'ERR_TLS_INVALID_PROTOCOL_METHOD' }), 'fatal');
+  });
+
+  it('EPROTO -> fatal', () => {
+    assert.equal(classifyError({ code: 'EPROTO' }), 'fatal');
+  });
+
   it('ECONNRESET -> transient (not in FATAL_ERR_CODES)', () => {
     assert.equal(classifyError({ code: 'ECONNRESET' }), 'transient');
   });

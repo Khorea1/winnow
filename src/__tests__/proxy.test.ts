@@ -52,12 +52,6 @@ function createDb(): Database.Database {
     frozen_until INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (proxy, target)
   );`);
-  // Migration: add frozen_until if not present
-  try {
-    db.exec('ALTER TABLE proxy_health ADD COLUMN frozen_until INTEGER NOT NULL DEFAULT 0');
-  } catch {
-    // column already exists — noop
-  }
   db.exec(`CREATE TABLE IF NOT EXISTS validation_runs (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
     started   INTEGER NOT NULL,
@@ -422,11 +416,9 @@ describe('proxy server', () => {
       const body = await httpGetThroughProxy(proxyPort, TARGET_HOST, targetPort, '/');
       assert.equal(body, 'ok');
 
-      // The working proxy should have recorded a success.
-      // (Dead proxy may or may not have been tried due to shuffle.)
       const workingEntry = health.get(workingProxyUrl);
       assert.ok(workingEntry);
-      assert.ok(workingEntry!.successes >= 1, 'working proxy should have successes');
+      assert.equal(workingEntry!.successes, 1, 'working proxy should have exactly 1 success');
     });
   });
 
@@ -506,11 +498,11 @@ describe('proxy server', () => {
       });
       const badPort = await listen(badProxy);
 
-      // The request will fail — swallow the error
       try {
         await httpGetThroughProxy(badPort, TARGET_HOST, targetPort, '/');
       } catch {
-        // Expected failure — connection to dead upstream is refused
+        // Expected: the request may throw (transport error) or resolve with a 502 body
+        // (HTTP error) — either way the health entry is updated by the proxy.
       }
 
       // recordFailure is called synchronously inside tryWithRetry before the

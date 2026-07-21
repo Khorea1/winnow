@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, it } from 'node:test';
+import { after, before, describe, it } from 'node:test';
 import { DEFAULTS, loadConfig, updateConfig } from '../config/index.js';
 
 describe('DEFAULTS', () => {
@@ -138,6 +138,17 @@ describe('loadConfig', () => {
 });
 
 describe('updateConfig', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'winnow-config-test-'));
+
+  before(() => {
+    process.env.WINNOW_CONFIG = path.join(tmpDir, 'config.json');
+  });
+
+  after(() => {
+    delete process.env.WINNOW_CONFIG;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
   it('updates allowed keys', () => {
     const result = updateConfig({
       port: 9090,
@@ -157,7 +168,6 @@ describe('updateConfig', () => {
   });
 
   it('ignores disallowed keys', () => {
-    // proxyFile is NOT in API_ALLOWED_KEYS (not listed)
     const result = updateConfig({
       proxyFile: '/evil/path',
     });
