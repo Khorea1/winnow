@@ -1,5 +1,5 @@
-import dns from 'node:dns';
 import net from 'node:net';
+import { isBlockedAfterDns } from './ssrf.js';
 
 export interface ParsedProxy {
   raw: string;
@@ -14,6 +14,7 @@ export function parseLine(line: string): ParsedProxy | null {
   if (!line.includes('://')) line = `http://${line}`;
   try {
     const u = new URL(line);
+    if (!['http:', 'https:', 'socks5:', 'socks:'].includes(u.protocol)) return null;
     return { raw: original, url: u, proto: u.protocol.replace(':', '') };
   } catch {
     return null;
@@ -112,26 +113,42 @@ export function httpConnect(upstream: ParsedProxy, tHost: string, tPort: number,
         reject(new Error('upstream response header too large'));
         return;
       }
-      const headEnd = buf.indexOf('\r\n\r\n');
-      if (headEnd === -1) return;
-      const headStr = buf.slice(0, headEnd).toString();
-      const firstLine = headStr.split('\r\n')[0] || '';
-      const parts = firstLine.split(' ');
-      const code = parseInt(parts[1], 10);
-      if (code === 200) {
-        done = true;
-        clearTimeout(to);
-        resolve({ sock, head: buf.slice(headEnd + 4) });
-      } else if (code >= 400 || code === 0) {
+      // Loop to handle 1xx interim responses (e.g., 100 Continue)
+      while (true) {
+        const headEnd = buf.indexOf('\r\n\r\n');
+        if (headEnd === -1) return;
+        const headStr = buf.slice(0, headEnd).toString();
+        const firstLine = headStr.split('\r\n')[0] || '';
+        const parts = firstLine.split(' ');
+        const code = parseInt(parts[1], 10);
+        if (!Number.isFinite(code)) {
+          done = true;
+          clearTimeout(to);
+          sock.destroy();
+          reject(new Error(`proxy bad status line ${firstLine}`));
+          return;
+        }
+        if (code === 200) {
+          done = true;
+          clearTimeout(to);
+          resolve({ sock, head: buf.slice(headEnd + 4) });
+          return;
+        }
+        if (code >= 100 && code < 200) {
+          // Interim 1xx response (e.g., 100 Continue) — consume and continue
+          buf = buf.slice(headEnd + 4);
+          continue;
+        }
+        // >=400, 0, or other non-success code
         done = true;
         clearTimeout(to);
         sock.destroy();
-        reject(new Error(`proxy refused ${firstLine}`));
-      } else {
-        done = true;
-        clearTimeout(to);
-        sock.destroy();
-        reject(new Error(`proxy responded with ${code}`));
+        if (code >= 400 || code === 0) {
+          reject(new Error(`proxy refused ${firstLine}`));
+        } else {
+          reject(new Error(`proxy responded with ${code}`));
+        }
+        return;
       }
     });
     sock.on('error', (e) => {
@@ -164,16 +181,28 @@ function socks5AddrBuffer(tHost: string, tPort: number): Buffer {
     const gapIdx = parts.indexOf('');
     const before = gapIdx === -1 ? parts : parts.slice(0, gapIdx);
     const after = gapIdx === -1 ? [] : parts.slice(gapIdx + 1).filter((s) => s !== '');
-    const zerosNeeded = 8 - before.length - after.length;
+    // Count IPv4 dot-decimal segments as 2 slots each
+    const afterSlotCount = after.reduce((sum, seg) => sum + (seg.includes('.') ? 2 : 1), 0);
+    const zerosNeeded = 8 - before.length - afterSlotCount;
     const bytes: number[] = [];
     for (const seg of before) {
-      const n = parseInt(seg || '0', 16);
-      bytes.push((n >> 8) & 0xff, n & 0xff);
+      if (seg.includes('.')) {
+        const octets = seg.split('.').map(Number);
+        bytes.push(octets[0], octets[1], octets[2], octets[3]);
+      } else {
+        const n = parseInt(seg || '0', 16);
+        bytes.push((n >> 8) & 0xff, n & 0xff);
+      }
     }
     for (let i = 0; i < zerosNeeded; i++) bytes.push(0, 0);
     for (const seg of after) {
-      const n = parseInt(seg || '0', 16);
-      bytes.push((n >> 8) & 0xff, n & 0xff);
+      if (seg.includes('.')) {
+        const octets = seg.split('.').map(Number);
+        bytes.push(octets[0], octets[1], octets[2], octets[3]);
+      } else {
+        const n = parseInt(seg || '0', 16);
+        bytes.push((n >> 8) & 0xff, n & 0xff);
+      }
     }
     return Buffer.concat([Buffer.from([0x05, 0x01, 0x00, 0x04, ...bytes]), pb]);
   }
@@ -261,8 +290,15 @@ export function socks5Connect(upstream: ParsedProxy, tHost: string, tPort: numbe
         sock.write(socks5AddrBuffer(tHost, tPort));
         stage = 2;
       } else {
+        if (replyBuf.length + data.length > 65536) {
+          done = true;
+          clearTimeout(to);
+          sock.destroy();
+          reject(new Error('SOCKS5 reply too large'));
+          return;
+        }
         replyBuf = Buffer.concat([replyBuf, data]);
-        if (replyBuf.length < 2) return;
+        if (replyBuf.length < 4) return; // need ATYP byte
         if (replyBuf[0] !== 0x05) {
           done = true;
           clearTimeout(to);
@@ -270,9 +306,38 @@ export function socks5Connect(upstream: ParsedProxy, tHost: string, tPort: numbe
           reject(new Error('SOCKS5 invalid version'));
           return;
         }
-        if (replyBuf.length < 10) return;
+        // Determine minimum reply length based on ATYP
+        const atyp = replyBuf[3];
+        let minLen: number;
+        if (atyp === 0x01) {
+          minLen = 10; // 4 + IPv4(4) + port(2)
+        } else if (atyp === 0x03) {
+          if (replyBuf.length < 5) return; // need domain length byte
+          minLen = 7 + replyBuf[4]; // 4 + 1(domlen) + domLen + 2(port)
+        } else if (atyp === 0x04) {
+          minLen = 22; // 4 + IPv6(16) + port(2)
+        } else {
+          done = true;
+          clearTimeout(to);
+          sock.destroy();
+          reject(new Error(`SOCKS5 unsupported ATYP ${atyp}`));
+          return;
+        }
+        if (replyBuf.length < minLen) return;
         if (replyBuf[1] !== 0x00) {
-          const err = new Error(`socks5 connect fail ${replyBuf[1]}`);
+          const SOCKS_REPLY_CODES: Record<number, string> = {
+            0: 'succeeded',
+            1: 'general SOCKS server failure',
+            2: 'connection not allowed by ruleset',
+            3: 'Network unreachable',
+            4: 'Host unreachable',
+            5: 'Connection refused',
+            6: 'TTL expired',
+            7: 'Command not supported',
+            8: 'Address type not supported',
+          };
+          const codeDesc = SOCKS_REPLY_CODES[replyBuf[1]] || 'unknown';
+          const err = new Error(`socks5 connect fail ${replyBuf[1]} (${codeDesc})`);
           Object.defineProperty(err, 'socksReply', { value: replyBuf[1] });
           done = true;
           clearTimeout(to);
@@ -306,116 +371,11 @@ export async function dial(upstream: ParsedProxy, h: string, p: number, timeout:
   if (!['http', 'socks5', 'socks'].includes(upstream.proto)) {
     throw new Error(`unsupported proxy protocol: ${upstream.proto}`);
   }
+  // Post-DNS SSRF validation: reject if any resolved IP is a blocked target
+  if (await isBlockedAfterDns(h)) {
+    throw new Error(`target blocked by SSRF rules: ${h}`);
+  }
   if (upstream.proto === 'socks5') return socks5Connect(upstream, h, p, timeout);
   if (upstream.proto === 'socks4' || upstream.proto === 'socks4a') throw new Error('SOCKS4 not supported');
   return httpConnect(upstream, h, p, timeout);
-}
-
-// Blocked ranges for proxy CONNECT/HTTP targets (SSRF prevention).
-// IPv4: loopback 127/8, link-local 169.254/16, RFC 1918 (10/8, 172.16/12,
-// 192.168/16), RFC 6598 CGNAT (100.64/10). Hostnames: localhost, *.local,
-// *.internal. IPv6: loopback ::1, IPv4-mapped private ranges via ::ffff:.
-// ULA (fc00::/7) is NOT blocked — internal networks legitimately use it.
-function normalizeIPv6(host: string): string {
-  // Only call after net.isIPv6(host) confirmed true
-  const lower = host.toLowerCase();
-  // Expand ::
-  let groups: string[];
-  if (lower.includes('::')) {
-    const parts = lower.split('::');
-    const left = parts[0] ? parts[0].split(':') : [];
-    const right = parts[1] ? parts[1].split(':') : [];
-    const missing = 8 - left.length - right.length;
-    groups = [...left, ...Array(missing).fill('0'), ...right];
-  } else {
-    groups = lower.split(':');
-  }
-  // Strip leading zeros from each group
-  groups = groups.map((g) => g.replace(/^0+/g, '') || '0');
-  return groups.join(':');
-}
-
-export function isBlockedTarget(host: string): boolean {
-  // Hostname-based blocking (SSRF prevention for internal hostnames)
-  const lower = host.toLowerCase();
-  if (lower === 'localhost' || lower === 'localhost.localdomain' || lower === '127.0.0.1' || lower === '::1' || lower === '0.0.0.0' || lower === '::')
-    return true;
-  if (lower.endsWith('.local') || lower.endsWith('.internal')) return true;
-
-  // IPv4 checks
-  const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(host);
-  if (m) {
-    const [a, b] = [parseInt(m[1], 10), parseInt(m[2], 10)];
-    if (a === 127 || a === 0) return true; // loopback / 0.0.0.0/8
-    if (a === 169 && b === 254) return true; // link-local (incl. AWS IMDS)
-    if (a === 10) return true; // RFC 1918 10/8
-    if (a === 100 && b >= 64 && b <= 127) return true; // RFC 6598 CGNAT
-    if (a === 172 && b >= 16 && b <= 31) return true; // RFC 1918 172.16/12
-    if (a === 192 && b === 168) return true; // RFC 1918 192.168/16
-  }
-  // IPv6 checks
-  if (net.isIPv6(host)) {
-    const normalized = normalizeIPv6(host);
-    // IPv6 loopback full form (both ::1 and zero-padded forms)
-    if (normalized === '0:0:0:0:0:0:0:1') return true;
-
-    // Handle all forms of embedded IPv4 addresses for SSRF prevention:
-    // - IPv4-mapped IPv6 (::ffff:1.2.3.4 → 1.2.3.4)
-    // - Expanded forms (0:0:0:0:0:ffff:1.2.3.4)
-    // - IPv4-compatible (::1.2.3.4)
-    const v4Match = lower.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
-    if (v4Match && net.isIPv4(v4Match[1])) {
-      return isBlockedTarget(v4Match[1]);
-    }
-
-    // Hex-encoded IPv4-mapped IPv6 (::ffff:7f00:1 → 127.0.0.1)
-    // This form doesn't contain dot-decimal so the regex above won't catch it.
-    // After normalization, even expanded forms like 0:0:0:0:0:ffff:7f00:1
-    // have the same prefix so they're caught here.
-    const V4MAPPED_PREFIX = '0:0:0:0:0:ffff:';
-    if (normalized.startsWith(V4MAPPED_PREFIX)) {
-      const v4part = normalized.slice(V4MAPPED_PREFIX.length);
-      // Dot-decimal: ::ffff:127.0.0.1
-      if (net.isIPv4(v4part)) {
-        return isBlockedTarget(v4part);
-      }
-      // Hex-encoded: ::ffff:7f00:1 → 127.0.0.1
-      if (/^[0-9a-f]{1,4}:[0-9a-f]{1,4}$/.test(v4part)) {
-        const [h1, h2] = v4part.split(':').map((h) => parseInt(h || '0', 16));
-        const a = (h1 >> 8) & 0xff;
-        const b = h1 & 0xff;
-        const c = (h2 >> 8) & 0xff;
-        const d = h2 & 0xff;
-        return isBlockedTarget(`${a}.${b}.${c}.${d}`);
-      }
-    }
-  }
-  // Additional blocked hostnames for SSRF protection (pre-DNS)
-  // Cloud metadata endpoints
-  if (
-    lower === 'metadata.google.internal' ||
-    lower === 'metadata.internal' ||
-    lower === '169.254.169.254' ||
-    lower === '100.100.100.200' ||
-    lower === 'instance-data' ||
-    lower.startsWith('instance-data.')
-  )
-    return true;
-  // Note: Full SSRF protection requires post-DNS resolution IP validation.
-  // Hostnames that resolve to private IPs (e.g., via DNS rebinding or CNAME)
-  // are not caught here. Consider adding `dns.lookup` validation for production.
-  return false;
-}
-// ── Post-DNS SSRF validation ──────────────────────────────────────────
-// Best-effort: resolves the hostname and checks the resolved IP(s) against
-// blocked ranges. DNS rebinding is still theoretically possible during the
-// window between lookup and connect, so this is defense-in-depth, not a
-// guarantee.
-async function _isBlockedTargetDNS(host: string, lookupFn: (host: string) => Promise<{ address: string }> = dns.promises.lookup): Promise<boolean> {
-  try {
-    const { address } = await lookupFn(host);
-    return isBlockedTarget(address);
-  } catch {
-    return false;
-  }
 }

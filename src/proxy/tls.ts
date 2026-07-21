@@ -82,7 +82,7 @@ export function tlsHandshake(sock: net.Socket, host: string, opts: { insecure?: 
   });
 }
 
-export function isSelfSignedError(result: TlsResult): boolean {
+export function isSoftTlsError(result: TlsResult): boolean {
   const msg = (result.authorizationError || '').toLowerCase();
   return (
     !result.authorized &&
