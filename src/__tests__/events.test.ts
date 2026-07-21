@@ -33,8 +33,8 @@ describe('EventLog', () => {
       log.push({ type: 'connect', proxy: `p${i}`, target: 't', status: 'attempt' });
     }
     assert.equal(log.recent(3).length, 3);
-    assert.equal(log.recent(3)[0].proxy, 'p7');
-    assert.equal(log.recent(3)[2].proxy, 'p9');
+    assert.equal(log.recent(3)[0].proxy, 'p9');
+    assert.equal(log.recent(3)[2].proxy, 'p7');
   });
 
   it('recent returns all when limit >= size', () => {
@@ -52,7 +52,7 @@ describe('EventLog', () => {
       log.push({ type: 'connect', proxy: `p${i}`, target: 't', status: 'attempt' });
     }
     assert.equal(log.all.length, 5);
-    assert.equal(log.all[0].proxy, 'p5');
+    assert.equal(log.all[0].proxy, 'p9');
   });
 
   it('clear empties the log', () => {

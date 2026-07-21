@@ -42,7 +42,7 @@ export function createLogger(name: string): Logger {
     };
     for (const [k, v] of Object.entries(ctx)) {
       // Avoid collisions with built-in fields
-      if (k === 'time' || k === 'level' || k === 'name' || k === 'msg') continue;
+      if (k === 'time' || k === 'level' || k === 'name' || k === 'msg' || k === '_jsonError' || k === '_circular') continue;
       entry[k] = v;
     }
     let jsonStr = '';

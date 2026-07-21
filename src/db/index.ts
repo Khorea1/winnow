@@ -1,8 +1,9 @@
 import Database, { type Database as DatabaseType, type Statement } from 'better-sqlite3';
 
 const SCHEMA = `
--- Note: all timestamp columns (started, finished, banned_until, last_ok, frozen_until)
--- store Unix epoch time in SECONDS (not milliseconds) for SQLite datetime function compatibility.
+-- Note: validation_runs timestamps (started, finished) store Unix epoch time in SECONDS
+-- for SQLite datetime function compatibility. proxy_health timestamps (banned_until,
+-- last_ok, frozen_until) store MILLISECONDS for consistency with in-memory HealthEntry.
 CREATE TABLE IF NOT EXISTS proxy_health (
   proxy  TEXT NOT NULL,
   target TEXT NOT NULL DEFAULT '*',
@@ -71,6 +72,7 @@ interface StmtCache {
   loadAll: Statement<unknown[], HealthRow>;
   insertRun: Statement<[number]>;
   finishRun: Statement<[number, number, number, number, number, number]>;
+  recentRuns: Statement<[number], unknown>;
   upsertTx: (rows: HealthRowInput[]) => void;
 }
 const stmtCache = new WeakMap<DatabaseType, StmtCache>();
@@ -94,6 +96,7 @@ function getStmts(db: DatabaseType): StmtCache {
       loadAll: db.prepare('SELECT * FROM proxy_health'),
       insertRun: db.prepare('INSERT INTO validation_runs (started) VALUES (?)'),
       finishRun: db.prepare('UPDATE validation_runs SET finished = ?, total = ?, passed = ?, failed = ?, exit_code = ? WHERE id = ?'),
+      recentRuns: db.prepare('SELECT * FROM validation_runs ORDER BY id DESC LIMIT ?'),
       upsertTx: db.transaction((rows: HealthRowInput[]) => {
         for (const r of rows) s!.upsertHealth.run(r);
       }),
@@ -139,4 +142,8 @@ export function finishValidationRun(db: DatabaseType, id: number, total: number,
   if (result.changes === 0) {
     // Validation run id not found — may indicate stale state
   }
+}
+
+export function getRecentValidationRuns(db: DatabaseType, limit = 20): unknown[] {
+  return getStmts(db).recentRuns.all(limit);
 }
