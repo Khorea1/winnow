@@ -75,6 +75,7 @@ export function tlsHandshake(sock: net.Socket, host: string, opts: { insecure?: 
       if (!done) {
         done = true;
         clearTimeout(timer);
+        sock.destroy();
         reject(e);
       }
     }

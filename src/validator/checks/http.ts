@@ -1,6 +1,6 @@
 import type net from 'node:net';
 import tls from 'node:tls';
-import { dial, parseLine } from '../../proxy/dial.js';
+import { dial, isBlockedTarget, parseLine } from '../../proxy/dial.js';
 
 export interface HttpCheckResult {
   latency: number;
@@ -26,6 +26,10 @@ export async function httpCheck(
 
   const u = new URL(targetUrl);
   const tHost = u.hostname;
+  if (isBlockedTarget(tHost)) {
+    throw new Error(`target ${tHost} is blocked`);
+  }
+
   const tPort = parseInt(u.port, 10) || (u.protocol === 'https:' ? 443 : 80);
   const isHttps = u.protocol === 'https:';
   const pathAndQuery = u.pathname + u.search || '/';
@@ -78,7 +82,7 @@ export async function httpCheck(
 
   return new Promise((resolve, reject) => {
     let buf = Buffer.alloc(0);
-    let headersEnd = -1;
+    let headersFound = false;
     let firstByteTime = 0;
     let done = false;
     const timeout = setTimeout(() => {
@@ -97,10 +101,15 @@ export async function httpCheck(
         ttfb = firstByteTime - start;
       }
       buf = Buffer.concat([buf, chunk]);
-      if (headersEnd === -1) {
+      if (buf.length > 2 * 1024 * 1024) {
+        socket.destroy();
+        reject(new Error('response too large'));
+        return;
+      }
+      if (!headersFound) {
         const idx = buf.indexOf('\r\n\r\n');
         if (idx !== -1) {
-          headersEnd = idx;
+          headersFound = true;
         }
       }
       // If we already have headers and full body? For /ip, body is small, we can wait for close

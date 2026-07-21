@@ -1,4 +1,4 @@
-import { dial, parseLine } from '../../proxy/dial.js';
+import { dial, isBlockedTarget, parseLine } from '../../proxy/dial.js';
 
 export interface StreamResult {
   chunks: number;
@@ -24,6 +24,10 @@ export async function streamingCheck(
 
   const u = new URL(targetUrl);
   const tHost = u.hostname;
+  if (isBlockedTarget(tHost)) {
+    throw new Error(`target ${tHost} is blocked`);
+  }
+
   const tPort = parseInt(u.port, 10) || (u.protocol === 'https:' ? 443 : 80);
   const pathAndQuery = u.pathname + u.search || '/';
 
@@ -81,23 +85,10 @@ export async function streamingCheck(
           }
         }
       } else {
-        const str = d.toString();
-        // Count non-empty lines as chunks (httpbin stream returns json per line)
-        const lines = str.split('\n');
-        let foundLine = false;
-        for (const line of lines) {
-          if (line.trim().length > 0) {
-            // Update lastChunkTime only on the first line of each TCP packet
-            // to measure real network gap (not intra-packet timing noise)
-            if (!foundLine) {
-              const gap = lastChunkTime ? now - lastChunkTime : 0;
-              if (gap > maxGap) maxGap = gap;
-              lastChunkTime = now;
-              foundLine = true;
-            }
-            chunks++;
-          }
-        }
+        chunks++;
+        const gap = lastChunkTime ? now - lastChunkTime : 0;
+        if (gap > maxGap) maxGap = gap;
+        lastChunkTime = now;
       }
     });
 
@@ -113,6 +104,9 @@ export async function streamingCheck(
       const ttfb = firstByte ? firstByte - start : total;
 
       if (status !== 0 && status !== 200) {
+        try {
+          sock.destroy();
+        } catch {}
         reject(new Error(`HTTP ${status}`));
         return;
       }
@@ -121,16 +115,25 @@ export async function streamingCheck(
       if (opts.ttfbRatio < 100 && total > 0 && ttfb > 0) {
         const ratio = (ttfb * 100) / total;
         if (ratio > opts.ttfbRatio) {
+          try {
+            sock.destroy();
+          } catch {}
           reject(new Error(`buffering ttfb ratio ${ratio.toFixed(0)}% > ${opts.ttfbRatio}%`));
           return;
         }
       }
 
       if (opts.maxGap > 0 && maxGap > opts.maxGap) {
+        try {
+          sock.destroy();
+        } catch {}
         reject(new Error(`gap ${maxGap}ms > ${opts.maxGap}ms`));
         return;
       }
 
+      try {
+        sock.destroy();
+      } catch {}
       resolve({ chunks, ttfb, total, maxGap, status: status || 200 });
     });
 
@@ -138,11 +141,22 @@ export async function streamingCheck(
       if (!done) {
         done = true;
         clearTimeout(timer);
+        try {
+          sock.destroy();
+        } catch {}
         reject(e);
       }
     });
 
     const req = `GET ${pathAndQuery} HTTP/1.1\r\nHost: ${tHost}\r\nConnection: close\r\nUser-Agent: winnow/4.0\r\nAccept: */*\r\n\r\n`;
-    sock.write(req);
+    try {
+      sock.write(req);
+    } catch (e) {
+      if (!done) {
+        done = true;
+        clearTimeout(timer);
+        reject(e instanceof Error ? e : new Error(String(e)));
+      }
+    }
   });
 }

@@ -60,7 +60,10 @@ export function parseHostPort(input: string, defaultPort = 443): { host: string;
     return { host: input, port: defaultPort };
   }
   const port = parseInt(portStr, 10);
-  return { host, port: Number.isFinite(port) ? port : defaultPort };
+  if (Number.isFinite(port) && port > 0 && port <= 65535) {
+    return { host, port };
+  }
+  return { host, port: defaultPort };
 }
 
 // CONNECT handshake uses `timeout` ms (typically 3500). After success the
@@ -116,6 +119,11 @@ export function httpConnect(upstream: ParsedProxy, tHost: string, tPort: number,
         clearTimeout(to);
         sock.destroy();
         reject(new Error(`proxy refused ${firstLine}`));
+      } else {
+        done = true;
+        clearTimeout(to);
+        sock.destroy();
+        reject(new Error(`proxy responded with ${code}`));
       }
     });
     sock.on('error', (e) => {
@@ -163,6 +171,9 @@ function socks5AddrBuffer(tHost: string, tPort: number): Buffer {
   }
   // Domain name (existing behavior)
   const hb = Buffer.from(tHost);
+  if (hb.length > 255) {
+    throw new Error('SOCKS5 target hostname too long');
+  }
   return Buffer.concat([Buffer.from([0x05, 0x01, 0x00, 0x03, hb.length]), hb, pb]);
 }
 
@@ -242,6 +253,20 @@ export function socks5Connect(upstream: ParsedProxy, tHost: string, tPort: numbe
         stage = 2;
       } else {
         if (data.length < 2) return;
+        if (data[0] !== 0x05) {
+          done = true;
+          clearTimeout(to);
+          sock.destroy();
+          reject(new Error('SOCKS5 invalid version'));
+          return;
+        }
+        if (data.length < 10) {
+          done = true;
+          clearTimeout(to);
+          sock.destroy();
+          reject(new Error('SOCKS5 truncated reply'));
+          return;
+        }
         if (data[1] !== 0x00) {
           done = true;
           clearTimeout(to);
@@ -259,6 +284,13 @@ export function socks5Connect(upstream: ParsedProxy, tHost: string, tPort: numbe
         done = true;
         clearTimeout(to);
         reject(e);
+      }
+    });
+    sock.on('close', () => {
+      if (!done) {
+        done = true;
+        clearTimeout(to);
+        reject(new Error('closed before SOCKS5 reply'));
       }
     });
   });
@@ -349,6 +381,19 @@ export function isBlockedTarget(host: string): boolean {
       }
     }
   }
-
+  // Additional blocked hostnames for SSRF protection (pre-DNS)
+  // Cloud metadata endpoints
+  if (
+    lower === 'metadata.google.internal' ||
+    lower === 'metadata.internal' ||
+    lower === '169.254.169.254' ||
+    lower === '100.100.100.200' ||
+    lower === 'instance-data' ||
+    lower.startsWith('instance-data.')
+  )
+    return true;
+  // Note: Full SSRF protection requires post-DNS resolution IP validation.
+  // Hostnames that resolve to private IPs (e.g., via DNS rebinding or CNAME)
+  // are not caught here. Consider adding `dns.lookup` validation for production.
   return false;
 }

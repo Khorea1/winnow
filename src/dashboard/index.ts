@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import type http from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -5,15 +6,13 @@ import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { type RotatorConfig, resolveDataDir, updateConfig } from '../config/index.js';
 import { createValidationRun, finishValidationRun } from '../db/index.js';
-import { EventLog } from '../events.js';
+import { EventLog, type ProxyEvent } from '../events.js';
 import { type HealthEntry, HealthStore } from '../health/index.js';
 import { createLogger } from '../logger.js';
 import { parseLine } from '../proxy/dial.js';
 import { buildOptionsFromConfig } from '../validator/index.js';
 import { runValidation } from '../validator/runner.js';
 import type { ProxyResult } from '../validator/types.js';
-
-let _lastRunId: number | null = null; // Track last run ID for abort fallback broadcast
 
 let _validationRunning = false;
 const logger = createLogger('dashboard');
@@ -107,7 +106,7 @@ function readBody(req: IncomingMessage, res: ServerResponse): Promise<string | n
         res.writeHead(413, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: `Body too large - max ${MAX_BODY_SIZE}` }));
       } catch {}
-      req.destroy();
+      req.resume();
       resolve(null); // Resolve immediately to prevent dangling promises
     }
   });
@@ -178,7 +177,8 @@ export function registerDashboard(
   });
 
   // LOG: subscribe to event log for live SSE broadcasting
-  eventLog?.subscribe((e) => broadcast(sseClients, 'proxy:event', e));
+  const eventSubscriber = (e: ProxyEvent) => broadcast(sseClients, 'proxy:event', e);
+  eventLog?.subscribe(eventSubscriber);
 
   // LOG: periodic pool status events
   const poolInterval = setInterval(() => {
@@ -270,7 +270,7 @@ export function registerDashboard(
             const kept = lines.filter((line) => {
               const parsed = parseLine(line);
               if (!parsed) return true; // keep comments/blank/unparsable lines untouched
-              if (sanitizeProxyKey(parsed.raw) === key) {
+              if (sanitizeProxyKey(parsed.raw) === sanitizeProxyKey(key)) {
                 removedFromFile = true;
                 return false;
               }
@@ -278,7 +278,7 @@ export function registerDashboard(
             });
             if (removedFromFile) {
               const dir = path.dirname(path.resolve(proxyFile));
-              const tmpFile = path.join(dir, `.${path.basename(proxyFile)}.tmp-${Date.now()}`);
+              const tmpFile = path.join(dir, `.${path.basename(proxyFile)}.tmp-${crypto.randomBytes(8).toString('hex')}`);
               fs.writeFileSync(tmpFile, kept.join('\n'), 'utf8');
               fs.renameSync(tmpFile, proxyFile);
             }
@@ -345,6 +345,16 @@ export function registerDashboard(
             custom = {};
           }
         }
+        if (typeof custom.threads === 'number') custom.threads = Math.max(1, Math.min(100, Math.floor(custom.threads)));
+        if (typeof custom.connectTimeout === 'number') custom.connectTimeout = Math.max(1, Math.min(60, Math.floor(custom.connectTimeout)));
+        if (typeof custom.maxLatency === 'number') custom.maxLatency = Math.max(100, Math.min(60000, custom.maxLatency));
+        if (typeof custom.throttle === 'number') custom.throttle = Math.max(0, Math.min(10000, custom.throttle));
+        if (typeof custom.ttfbRatio === 'number') custom.ttfbRatio = Math.max(0, Math.min(1000, custom.ttfbRatio));
+        if (typeof custom.maxGap === 'number') custom.maxGap = Math.max(0, Math.min(60000, custom.maxGap));
+        if (custom.tlsPort !== undefined) custom.tlsPort = Math.max(1, Math.min(65535, Math.floor(custom.tlsPort)));
+        if (custom.mode !== undefined && !['quick', 'standard', 'strict', 'stream', 'tcp-only'].includes(custom.mode)) {
+          delete custom.mode;
+        }
         startValidation(res, { cfgRef, sseClients, health, db, custom }).catch((err) => {
           logger.error({ error: err instanceof Error ? err.message : String(err) }, 'validation failed to start');
           if (!res.headersSent) {
@@ -365,8 +375,7 @@ export function registerDashboard(
           const rows = db.prepare('SELECT * FROM validation_runs ORDER BY id DESC LIMIT 20').all();
           respondJson(res, rows);
         } catch (e: unknown) {
-          res.writeHead(500);
-          res.end(e instanceof Error ? e.message : String(e));
+          respondJson(res, { error: e instanceof Error ? e.message : String(e) }, 500);
         }
         return;
       }
@@ -426,8 +435,7 @@ export function registerDashboard(
       }
     } catch (e: unknown) {
       try {
-        res.writeHead(500);
-        res.end(e instanceof Error ? e.message : String(e));
+        respondJson(res, { error: e instanceof Error ? e.message : String(e) }, 500);
       } catch {}
     }
   });
@@ -460,7 +468,7 @@ async function startValidation(
 
   if (!fs.existsSync(proxyFile)) {
     res.writeHead(400, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: `Proxy file not found: ${proxyFile}` }));
+    res.end(JSON.stringify({ error: 'Proxy file not found' }));
     return;
   }
 
@@ -478,10 +486,10 @@ async function startValidation(
     anonCheck: custom.anonCheck ?? cfg.validationAnonCheck,
     tlsHost: custom.tlsHost ?? cfg.validationTlsHost,
     tlsPort: custom.tlsPort ?? cfg.validationTlsPort,
+    maxGap: custom.maxGap ?? cfg.validationMaxGap,
   });
 
   const runId = createValidationRun(ctx.db);
-  _lastRunId = runId;
   _validationRunning = true;
   _abortController = new AbortController();
 
@@ -540,7 +548,7 @@ async function startValidation(
       if (prune) {
         if (result.valid.length > 0) {
           const dir = path.dirname(path.resolve(proxyFile));
-          const tmpFile = path.join(dir, `.${path.basename(proxyFile)}.tmp-${Date.now()}`);
+          const tmpFile = path.join(dir, `.${path.basename(proxyFile)}.tmp-${crypto.randomBytes(8).toString('hex')}`);
           fs.writeFileSync(tmpFile, `${result.valid.join('\n')}\n`, 'utf8');
           fs.renameSync(tmpFile, proxyFile);
           logger.info({ kept: result.valid.length, removed: result.invalid.length }, 'pruned proxy file');
@@ -560,7 +568,7 @@ async function startValidation(
         const newProxies = result.valid.filter((p) => !existing.has(p));
         if (newProxies.length) {
           const dir = path.dirname(path.resolve(proxyFile));
-          const tmpFile = path.join(dir, `.${path.basename(proxyFile)}.tmp-${Date.now()}`);
+          const tmpFile = path.join(dir, `.${path.basename(proxyFile)}.tmp-${crypto.randomBytes(8).toString('hex')}`);
           const finalContent = `${(existingContent ? existingContent.replace(/\n*$/, '\n') : '') + newProxies.join('\n')}\n`;
           fs.writeFileSync(tmpFile, finalContent, 'utf8');
           fs.renameSync(tmpFile, proxyFile);
@@ -569,6 +577,10 @@ async function startValidation(
       }
     } catch (e: unknown) {
       logger.warn({ error: e instanceof Error ? e.message : String(e) }, 'file update error');
+    }
+    // Clean up health entries for invalid proxies
+    for (const p of result.invalid) {
+      ctx.health.delete(p.proxy);
     }
 
     finishValidationRun(ctx.db, runId, uniq.length, validCount, invalidCount, 0);

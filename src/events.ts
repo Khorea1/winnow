@@ -1,7 +1,7 @@
 export interface ProxyEvent {
   id: number;
   ts: number;
-  type: 'connect' | 'http' | 'healthcheck' | 'retry' | 'ban' | 'unban' | 'freeze' | 'classify' | 'pool';
+  type: 'connect' | 'http' | 'healthcheck' | 'retry' | 'ban' | 'unban' | 'freeze' | 'freeze_extended' | 'demoted' | 'classify' | 'pool';
   proxy: string;
   target: string;
   status: 'attempt' | 'success' | 'failure' | 'info';
@@ -27,8 +27,9 @@ export class EventLog {
     this._buffer = new Array(maxSize);
   }
 
-  subscribe(fn: (e: ProxyEvent) => void) {
+  subscribe(fn: (e: ProxyEvent) => void): () => void {
     this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
   }
   unsubscribe(fn: (e: ProxyEvent) => void) {
     this.listeners.delete(fn);
@@ -48,7 +49,7 @@ export class EventLog {
       this._tail = (this._tail + 1) % this._max;
     }
     // Notify listeners — failures must never crash the app
-    for (const fn of this.listeners) {
+    for (const fn of [...this.listeners]) {
       try {
         fn(e);
       } catch {}

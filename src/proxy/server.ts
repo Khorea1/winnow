@@ -94,18 +94,12 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
     const reqId = shortId();
     const parsed = parseHostPort(req.url || '', 443);
     if (!parsed) {
-      try {
-        clientSock.write('HTTP/1.1 400 Bad Request\r\n\r\n');
-      } catch {}
-      clientSock.end();
+      clientSock.end('HTTP/1.1 400 Bad Request\r\n\r\n');
       return;
     }
     const { host: tHost, port: tPort } = parsed;
     if (isBlockedTarget(tHost)) {
-      try {
-        clientSock.write('HTTP/1.1 403 Forbidden\r\n\r\n');
-      } catch {}
-      clientSock.end();
+      clientSock.end('HTTP/1.1 403 Forbidden\r\n\r\n');
       return;
     }
     const targetKey = `${tHost}:${tPort}`;
@@ -239,6 +233,7 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
         } catch {}
       });
       clientSock.on('close', () => {
+        if (failed) return;
         cancelTimeout?.();
         // client close — no health scoring; only clean up the upstream side
         try {
@@ -359,6 +354,7 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
       // Manual body write with backpressure — avoids dual-listener race from req.pipe + req.on('data')
       if (req.method !== 'GET' && req.method !== 'HEAD') {
         req.on('data', (chunk: Buffer) => {
+          if (requestFailed) return;
           requestBodyBytes += chunk.length;
           bodyBytes += chunk.length;
           if (bodyBytes > MAX_BODY_BYTES && !requestFailed) {

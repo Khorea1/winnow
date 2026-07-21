@@ -22,7 +22,7 @@ function parseArgv(args: string[]): Record<string, string | number | boolean> {
       r.help = true;
       continue;
     }
-    const m = a.match(/^--(.+?)(?:=(.+))?$/);
+    const m = a.match(/^--(.+?)(?:=(.*))?$/);
     if (m) {
       const k = m[1].replace(/-/g, '');
       r[k] = m[2] ?? (i + 1 < args.length && !args[i + 1].startsWith('-') ? args[++i] : true);
@@ -91,7 +91,7 @@ const logger = createLogger('main');
 
 // Load proxies
 function load() {
-  if (_hcRunning) return;
+  if (_hcRunning || shuttingDown) return;
   try {
     const list = fs
       .readFileSync(config.proxyFile, 'utf8')
@@ -148,29 +148,32 @@ function shutdown(reason = 'SIGTERM') {
   }
   // Close server first — stop accepting new connections, drain in-flight
   if (server) {
+    const forceExit = setTimeout(() => {
+      process.exit(hadUncaughtException ? 1 : 0);
+    }, 10_000).unref();
     server.close(() => {
+      clearTimeout(forceExit);
       health.stop();
       db.close();
       try {
         const pidPath = path.join(resolveDataDir(), '.winnow.pid');
         fs.unlinkSync(pidPath);
       } catch {}
-      setTimeout(() => process.exit(hadUncaughtException ? 1 : 0), 10_000).unref();
+      process.exit(hadUncaughtException ? 1 : 0);
     });
-  } else {
-    health.stop();
-    db.close();
-    try {
-      const pidPath = path.join(resolveDataDir(), '.winnow.pid');
-      fs.unlinkSync(pidPath);
-    } catch {}
-    setTimeout(() => process.exit(hadUncaughtException ? 1 : 0), 10_000).unref();
   }
 }
 process.on('uncaughtException', (err) => {
   hadUncaughtException = true;
   logger.error({ error: err.message, stack: err.stack }, 'uncaught exception');
-  shutdown('uncaughtException');
+  // Flush health store synchronously, then exit quickly
+  health.stop(); // flushes pending writes
+  db.close();
+  try {
+    const pidPath = path.join(resolveDataDir(), '.winnow.pid');
+    fs.unlinkSync(pidPath);
+  } catch {}
+  process.exit(1);
 });
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
@@ -179,6 +182,7 @@ process.on('unhandledRejection', (reason) => {
   logger.warn({ error: String(reason) }, 'unhandled rejection');
 });
 let _hcRunning = false;
+let _pendingReload = false;
 _hcInterval = setInterval(async () => {
   if (_hcRunning || shuttingDown) return;
   _hcRunning = true;
@@ -186,6 +190,10 @@ _hcInterval = setInterval(async () => {
     await healthCheckTick(proxies, health, configRef.current, configRef.current.targets, eventLog);
   } finally {
     _hcRunning = false;
+    if (_pendingReload) {
+      _pendingReload = false;
+      load();
+    }
   }
 }, 15000);
 // Start server — wrap in error handling for EADDRINUSE etc.
@@ -218,7 +226,7 @@ let _reloadTimer: NodeJS.Timeout | undefined;
 const watchDir = path.dirname(path.resolve(config.proxyFile));
 const watchFile = path.basename(config.proxyFile);
 try {
-  fileWatcher = fs.watch(watchDir, (eventType, filename) => {
+  fileWatcher = fs.watch(watchDir, (_eventType, filename) => {
     if (filename === watchFile) {
       clearTimeout(_reloadTimer);
       _reloadTimer = setTimeout(() => load(), 300);

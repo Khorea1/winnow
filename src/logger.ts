@@ -17,11 +17,14 @@ function resolveMinLevel(): number {
 }
 
 function formatTime(d: Date): string {
+  const Y = d.getFullYear();
+  const M = String(d.getMonth() + 1).padStart(2, '0');
+  const D = String(d.getDate()).padStart(2, '0');
   const h = String(d.getHours()).padStart(2, '0');
   const m = String(d.getMinutes()).padStart(2, '0');
   const s = String(d.getSeconds()).padStart(2, '0');
   const ms = String(d.getMilliseconds()).padStart(3, '0');
-  return `${h}:${m}:${s}.${ms}`;
+  return `${Y}-${M}-${D} ${h}:${m}:${s}.${ms}`;
 }
 
 export interface Logger {
@@ -47,10 +50,22 @@ export function createLogger(name: string): Logger {
       if (k === 'time' || k === 'level' || k === 'name' || k === 'msg') continue;
       entry[k] = v;
     }
+    let jsonStr: string;
     try {
-      process.stderr.write(`${JSON.stringify(entry)}\n`);
+      jsonStr = JSON.stringify(entry);
     } catch {
-      // Swallow write errors silently — we're already logging a failure
+      jsonStr = JSON.stringify({
+        time: entry.time,
+        level: entry.level,
+        name: entry.name,
+        msg: entry.msg,
+        _circular: true,
+      });
+    }
+    try {
+      process.stderr.write(`${jsonStr}\n`);
+    } catch {
+      // Swallow write errors
     }
   }
 

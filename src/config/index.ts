@@ -79,6 +79,7 @@ const DEFAULTS: RotatorConfig = {
 
 const API_ALLOWED_KEYS = new Set<keyof RotatorConfig>([
   'port',
+  'proxyFile',
   'retries',
   'maxErrors',
   'timeout',
@@ -155,7 +156,13 @@ function sanitize(cfg: Record<string, unknown>): RotatorConfig {
   c.validationInsecure = !!c.validationInsecure;
   c.validationStrictTLS = !!c.validationStrictTLS;
   c.validationPrune = c.validationPrune !== false;
-  const trimmedTargets = Array.isArray(c.targets) ? (c.targets as string[]).map((t: string) => String(t).trim()).filter(Boolean) : [];
+  c.validationAnonCheck = !!c.validationAnonCheck;
+  const trimmedTargets = Array.isArray(c.targets)
+    ? c.targets
+        .filter((t): t is string => typeof t === 'string')
+        .map((t: string) => t.trim())
+        .filter(Boolean)
+    : [];
   c.targets = trimmedTargets.length ? trimmedTargets : DEFAULTS.targets;
   c.upstreamIdleTimeout = clampNum(c.upstreamIdleTimeout, 0, 120000, 0);
   c.proxyFile = ensureString(c.proxyFile, DEFAULTS.proxyFile, (s) => !s.includes('\0'));

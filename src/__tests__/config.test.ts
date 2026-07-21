@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { DEFAULTS, loadConfig, updateConfig } from '../config/index.js';
+import { DEFAULTS, loadConfig, type RotatorConfig, updateConfig } from '../config/index.js';
 
 describe('DEFAULTS', () => {
   it('has expected default port', () => {
@@ -168,10 +168,12 @@ describe('updateConfig', () => {
   });
 
   it('ignores disallowed keys', () => {
+    // Reset config file to clean state (previous tests may have modified it)
+    fs.writeFileSync(process.env.WINNOW_CONFIG!, '{}', 'utf8');
     const result = updateConfig({
-      proxyFile: '/evil/path',
-    });
-    assert.notEqual(result.proxyFile, '/evil/path');
+      nonexistent: '/evil/path',
+    } as unknown as Partial<RotatorConfig>);
+    assert.equal(result.retries, DEFAULTS.retries);
   });
 
   it('sanitizes updated values', () => {

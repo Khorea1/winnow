@@ -11,6 +11,17 @@ const logger = createLogger('validator-runner');
 function fail(proxy: string, stage: string, error: string, extra?: Partial<ProxyResult>): ProxyResult {
   return { proxy, valid: false, error, stage, ...extra };
 }
+// Helper: race a promise against an abort signal
+function withAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      if (signal.aborted) reject(new Error('aborted'));
+      else signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+    }),
+  ]);
+}
 
 export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptions, abortSignal?: AbortSignal): Promise<ProxyResult> {
   const trimmed = proxyRaw.trim();
@@ -36,13 +47,16 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
   if (opts.mode !== 'tcp-only') {
     try {
       const target = `${opts.baseUrl.replace(/\/$/, '')}/ip`;
-      const res = await httpCheck(trimmed, target, {
-        connectTimeout: opts.connectTimeout,
-        maxLatency: opts.maxLatency,
-        insecure: opts.insecure,
-        strictTLS: opts.strictTLS,
-        anonCheck: opts.anonCheck,
-      });
+      const res = await withAbort(
+        httpCheck(trimmed, target, {
+          connectTimeout: opts.connectTimeout,
+          maxLatency: opts.maxLatency,
+          insecure: opts.insecure,
+          strictTLS: opts.strictTLS,
+          anonCheck: opts.anonCheck,
+        }),
+        abortSignal,
+      );
 
       if (res.status !== 200 && res.status !== 0) {
         return fail(trimmed, 'http', `HTTP ${res.status}`, { httpCode: res.status, latency: res.latency });
@@ -76,11 +90,14 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
     try {
       const tlsHost = opts.tlsHost || 'www.google.com';
       const tlsPort = opts.tlsPort || 443;
-      const tlsRes = await tlsCheck(trimmed, tlsHost, tlsPort, {
-        connectTimeout: opts.connectTimeout,
-        insecure: false,
-        strictTLS: true,
-      });
+      const tlsRes = await withAbort(
+        tlsCheck(trimmed, tlsHost, tlsPort, {
+          connectTimeout: opts.connectTimeout,
+          insecure: false,
+          strictTLS: true,
+        }),
+        abortSignal,
+      );
       if (!tlsRes.authorized) {
         return fail(trimmed, 'tls', `TLS invalid: ${tlsRes.error}`);
       }
@@ -100,13 +117,16 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
   if (opts.mode === 'standard' || opts.mode === 'strict' || opts.mode === 'stream') {
     try {
       const streamUrl = `${opts.baseUrl.replace(/\/$/, '')}/stream/5?delay=0.2`;
-      const res = await streamingCheck(trimmed, streamUrl, {
-        connectTimeout: opts.connectTimeout,
-        maxTime: 25,
-        expectedChunks: 5,
-        ttfbRatio: opts.ttfbRatio,
-        maxGap: opts.maxGap,
-      });
+      const res = await withAbort(
+        streamingCheck(trimmed, streamUrl, {
+          connectTimeout: opts.connectTimeout,
+          maxTime: 25,
+          expectedChunks: 5,
+          ttfbRatio: opts.ttfbRatio,
+          maxGap: opts.maxGap,
+        }),
+        abortSignal,
+      );
       const minChunks = Math.max(1, Math.floor(5 * 0.5));
       if (res.chunks < minChunks) {
         return fail(trimmed, 'stream', `insufficient chunks ${res.chunks}/5`, { chunks: res.chunks, ttfb: res.ttfb });
@@ -122,13 +142,16 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
   if (opts.mode === 'strict') {
     try {
       const stream20Url = `${opts.baseUrl.replace(/\/$/, '')}/stream/20?delay=0.1`;
-      const res = await streamingCheck(trimmed, stream20Url, {
-        connectTimeout: opts.connectTimeout,
-        maxTime: 35,
-        expectedChunks: 20,
-        ttfbRatio: opts.ttfbRatio,
-        maxGap: opts.maxGap,
-      });
+      const res = await withAbort(
+        streamingCheck(trimmed, stream20Url, {
+          connectTimeout: opts.connectTimeout,
+          maxTime: 35,
+          expectedChunks: 20,
+          ttfbRatio: opts.ttfbRatio,
+          maxGap: opts.maxGap,
+        }),
+        abortSignal,
+      );
       if (res.chunks < 10) {
         return fail(trimmed, 'stream20', `insufficient chunks ${res.chunks}/20`, { chunks: res.chunks });
       }
@@ -154,45 +177,62 @@ export async function runValidation(
   // Flat worker pool: each worker pulls from a shared queue
   const queue = proxyList;
   let idx = 0;
-  const workerCount = Math.min(opts.threads, queue.length);
+  let workerCount = Math.min(opts.threads, queue.length);
+  if (workerCount < 1) {
+    logger.warn({}, 'thread count is 0, defaulting to 1');
+    workerCount = 1;
+  }
 
   async function worker() {
-    while (idx < queue.length && !abortSignal?.aborted) {
-      const proxy = queue[idx++];
+    try {
+      while (idx < queue.length && !abortSignal?.aborted) {
+        const proxy = queue[idx++];
 
-      if (opts.throttle > 0) {
-        await new Promise((r) => setTimeout(r, Math.floor(Math.random() * (opts.throttle + 1))));
-      }
-      if (abortSignal?.aborted) break;
+        if (opts.throttle > 0) {
+          await new Promise((r) => setTimeout(r, opts.throttle));
+        }
+        if (abortSignal?.aborted) break;
 
-      try {
-        const res = await validateSingleProxy(proxy, opts, abortSignal);
-        results.push(res);
-        if (res.valid) valid.push(res.proxy);
-        else invalid.push({ proxy: res.proxy, reason: res.error || 'error' });
-        done++;
-        onProgress?.(res, { total, done, valid: valid.length, invalid: invalid.length });
-        const sanitizedProxy = res.proxy.replace(/\/\/.*@/, '//***:***@');
-        logger.debug(
-          { proxy: sanitizedProxy, valid: res.valid, stage: res.stage, error: res.error, done, total, validCount: valid.length, invalidCount: invalid.length },
-          'validation result',
-        );
-      } catch (e: unknown) {
-        const errMsg = e instanceof Error ? e.message : String(e);
-        const r: ProxyResult = { proxy, valid: false, error: errMsg, stage: 'unknown' };
-        results.push(r);
-        invalid.push({ proxy, reason: r.error! });
-        done++;
-        onProgress?.(r, { total, done, valid: valid.length, invalid: invalid.length });
-        const sanitizedProxy = r.proxy.replace(/\/\/.*@/, '//***:***@');
-        logger.debug(
-          { proxy: sanitizedProxy, valid: false, stage: r.stage, error: r.error, done, total, validCount: valid.length, invalidCount: invalid.length },
-          'validation error',
-        );
+        try {
+          const res = await validateSingleProxy(proxy, opts, abortSignal);
+          results.push(res);
+          if (res.valid) valid.push(res.proxy);
+          else invalid.push({ proxy: res.proxy, reason: res.error || 'error' });
+          done++;
+          onProgress?.(res, { total, done, valid: valid.length, invalid: invalid.length });
+          const sanitizedProxy = res.proxy.replace(/\/\/.*@/, '//***:***@');
+          logger.debug(
+            {
+              proxy: sanitizedProxy,
+              valid: res.valid,
+              stage: res.stage,
+              error: res.error,
+              done,
+              total,
+              validCount: valid.length,
+              invalidCount: invalid.length,
+            },
+            'validation result',
+          );
+        } catch (e: unknown) {
+          const errMsg = e instanceof Error ? e.message : String(e);
+          const r: ProxyResult = { proxy, valid: false, error: errMsg, stage: 'unknown' };
+          results.push(r);
+          invalid.push({ proxy, reason: r.error! });
+          done++;
+          onProgress?.(r, { total, done, valid: valid.length, invalid: invalid.length });
+          const sanitizedProxy = r.proxy.replace(/\/\/.*@/, '//***:***@');
+          logger.debug(
+            { proxy: sanitizedProxy, valid: false, stage: r.stage, error: r.error, done, total, validCount: valid.length, invalidCount: invalid.length },
+            'validation error',
+          );
+        }
       }
+    } catch (e) {
+      logger.error({ error: e instanceof Error ? e.message : String(e) }, 'validation worker error');
     }
   }
 
-  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  await Promise.allSettled(Array.from({ length: workerCount }, () => worker()));
   return { valid, invalid, results };
 }

@@ -43,15 +43,9 @@ export function initDb(dbPath: string): DatabaseType {
   db.exec(SCHEMA);
 
   // Migration: add frozen_until to proxy_health (v4.0.0)
-  try {
+  const columnExists = db.prepare("SELECT COUNT(*) as cnt FROM pragma_table_info('proxy_health') WHERE name='frozen_until'").get() as { cnt: number };
+  if (columnExists.cnt === 0) {
     db.exec('ALTER TABLE proxy_health ADD COLUMN frozen_until INTEGER NOT NULL DEFAULT 0');
-  } catch (e: unknown) {
-    // Column already exists is normal on subsequent startups
-    // Re-throw other errors (disk full, permission, corruption)
-    const msg = e instanceof Error ? e.message : String(e);
-    if (!msg.includes('duplicate column') && !msg.includes('already exists')) {
-      throw e;
-    }
   }
   db.pragma('journal_mode = WAL');
   return db;

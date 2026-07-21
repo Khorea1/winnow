@@ -66,10 +66,10 @@ describe('applySuccess', () => {
     assert.equal(h.frozenUntil, 999999);
   });
 
-  it('does not reset fatalErrors', () => {
+  it('decays fatalErrors on success', () => {
     const h = entry({ fatalErrors: 2 });
     applySuccess(h, 100, 4000);
-    assert.equal(h.fatalErrors, 2);
+    assert.equal(h.fatalErrors, 1);
   });
 });
 

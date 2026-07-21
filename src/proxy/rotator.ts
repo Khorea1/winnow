@@ -7,6 +7,8 @@ import { dial, type ParsedProxy, parseHostPort } from './dial.js';
 import { tlsHandshake } from './tls.js';
 
 const logger = createLogger('rotator');
+// Ports that require TLS handshake validation during health checks.
+const TLS_PORTS: Record<number, true> = { 443: true, 8443: true, 4433: true, 9443: true };
 
 export interface PoolOptions {
   config: RotatorConfig;
@@ -46,6 +48,7 @@ export async function tryWithRetry(
   }
   logger.debug({ target: targetKey, candidates: candidates.length, reqId }, 'starting retry loop');
   let lastErr: unknown;
+  let attemptNum = 0;
   for (const upstream of candidates) {
     const start = Date.now();
     try {
@@ -65,7 +68,7 @@ export async function tryWithRetry(
           target: targetKey,
           error: errMsg,
           errorClass: errClass,
-          attempt: candidates.indexOf(upstream) + 1,
+          attempt: attemptNum + 1,
           total: candidates.length,
           reqId,
         },
@@ -79,9 +82,10 @@ export async function tryWithRetry(
         error: errMsg,
         errorCode: errCode,
         errorClass: errClass,
-        detail: `attempt ${candidates.indexOf(upstream) + 1}/${candidates.length}`,
+        detail: `attempt ${attemptNum + 1}/${candidates.length}`,
       });
       health.recordFailure(upstream.raw, isTargetTracked ? targetKey : undefined, e, config, Date.now());
+      attemptNum++;
     }
   }
   const lastErrMsg = lastErr instanceof Error ? lastErr.message : lastErr ? String(lastErr) : 'unknown';
@@ -101,7 +105,7 @@ export async function healthCheckTick(proxies: ParsedProxy[], health: HealthStor
       EventLog.safePush(eventLog, { type: 'healthcheck', proxy: p.raw, target, status: 'attempt' });
       try {
         const { sock } = await dial(p, parsed.host, parsed.port, config.timeout);
-        if (parsed.port === 443) {
+        if (TLS_PORTS[parsed.port]) {
           try {
             const tlsRes = await tlsHandshake(sock, parsed.host, { insecure: !config.validationStrictTLS, timeout: config.timeout });
             if (config.validationStrictTLS && !tlsRes.authorized) {

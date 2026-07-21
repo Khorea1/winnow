@@ -10,7 +10,6 @@ const logger = createLogger('validator');
 export interface CliOptions extends Partial<ValidatorOptions> {
   output?: string;
   jsonOutput?: string;
-  verbose?: boolean;
 }
 
 interface ValidationConfigFragment {
@@ -82,7 +81,7 @@ export async function cliMain() {
     const v = args[i + 1];
     if (v === undefined) {
       logger.error({}, `missing value for ${flag}`);
-      process.exit(1);
+      throw new Error(`missing value for ${flag}`);
     }
     return v;
   };
@@ -90,7 +89,7 @@ export async function cliMain() {
     const n = parseInt(nextArg(i, flag), 10);
     if (!Number.isFinite(n)) {
       logger.error({}, `invalid number for ${flag}`);
-      process.exit(1);
+      throw new Error(`invalid number for ${flag}`);
     }
     return n;
   };
@@ -213,7 +212,7 @@ Examples:
 
   if (!proxyFile) {
     logger.error({}, 'usage: validator <file> [--threads 20] [--mode quick|standard|strict|tcp-only|stream] [--json out.json]');
-    process.exit(1);
+    throw new Error('usage: validator <file> [--threads 20] [--mode quick|standard|strict|tcp-only|stream] [--json out.json]');
   }
 
   // Base the CLI's option set on config.json (same file the server reads), then

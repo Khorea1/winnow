@@ -50,7 +50,7 @@ const SOCKS_FATAL_REPLIES = new Set([0x01, 0x02, 0x03, 0x04, 0x05, 0x07, 0x08]);
 export function classifyError(e: unknown): 'fatal' | 'transient' {
   if (!e || typeof e !== 'object') return 'transient';
   const err = e as Record<string, unknown>;
-  const code = String(err.code ?? err.errno ?? '');
+  const code = String(err.code ?? '');
   if (code && FATAL_ERR_CODES.has(code)) return 'fatal';
   // SOCKSv5 reply-code attached by socks5Connect when the proxy returned an error
   if (typeof err.socksReply === 'number' && SOCKS_FATAL_REPLIES.has(err.socksReply)) return 'fatal';
@@ -79,7 +79,7 @@ export function applyFailure(
     if (h.fatalErrors >= config.maxFatalErrors) {
       h.frozenUntil = now + config.fatalBanMs * 3;
     } else {
-      h.bannedUntil = now + config.fatalBanMs;
+      h.bannedUntil = Math.max(h.bannedUntil, now + config.fatalBanMs);
     }
   } else {
     h.errors++;
@@ -93,8 +93,9 @@ export function applyFailure(
  */
 export function applySuccess(h: HealthEntry, latency: number, now: number) {
   h.latency = h.latency === 9999 ? latency : Math.floor(h.latency * 0.7 + latency * 0.3);
-  h.successes++;
+  h.successes = Math.min(h.successes + 1, 200);
   h.errors = Math.max(0, h.errors - 1);
+  h.fatalErrors = Math.max(0, h.fatalErrors - 1);
   h.bannedUntil = 0;
   h.lastOk = now;
 }
@@ -220,6 +221,7 @@ export class HealthStore extends EventEmitter {
     const star = ensureStarEntry(this, proxy);
     const wasBanned = star.bannedUntil > now;
     const wasFrozen = star.frozenUntil > now;
+    const previousFrozenUntil = star.frozenUntil;
     applyFailure(star, err, config, now);
     if (target && target !== '*') {
       const te = this.getTarget(proxy, target);
@@ -261,6 +263,16 @@ export class HealthStore extends EventEmitter {
         errorClass: 'fatal',
         detail: `fatalErrors=${star.fatalErrors}`,
       });
+    } else if (wasFrozen && star.frozenUntil > previousFrozenUntil) {
+      EventLog.safePush(this._eventLog, {
+        type: 'freeze_extended',
+        proxy,
+        target: target || '*',
+        status: 'info',
+        error: errMsg,
+        errorClass: 'fatal',
+        detail: `fatalErrors=${star.fatalErrors}, frozenUntil=${new Date(star.frozenUntil).toISOString()}`,
+      });
     }
   }
 
@@ -286,11 +298,11 @@ export class HealthStore extends EventEmitter {
           count++;
           // LOG: emit unban event on boot thaw
           EventLog.safePush(this._eventLog, {
-            type: 'unban',
+            type: 'demoted',
             proxy,
             target: target || '*',
             status: 'info',
-            detail: 'pruned on boot',
+            detail: 'frozen→banned on boot',
           });
         }
       }
@@ -315,10 +327,14 @@ export class HealthStore extends EventEmitter {
     const star = byTarget.get('*');
     if (!star) return false;
     if (now < star.bannedUntil) return false;
+    if (star.errors > maxErrors) return false;
+    if (now < star.frozenUntil) return false;
     if (target) {
       const te = byTarget.get(target);
       if (te) {
         if (now < te.bannedUntil) return false;
+        if (te.errors > maxErrors) return false;
+        if (now < te.frozenUntil) return false;
       }
     }
     return true;
@@ -346,6 +362,7 @@ export class HealthStore extends EventEmitter {
   stop() {
     clearInterval(this._timer);
     this._flush();
+    this.removeAllListeners();
   }
 
   private _score(e: HealthEntry, now: number) {
