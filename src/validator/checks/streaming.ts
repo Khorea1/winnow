@@ -17,10 +17,10 @@ export async function streamingCheck(
   opts: {
     connectTimeout: number;
     maxTime: number;
-    expectedChunks: number;
     ttfbRatio: number;
     maxGap: number;
     insecure: boolean;
+    strictTLS: boolean;
   },
 ): Promise<StreamResult> {
   const parsedProxy = parseLine(proxyRaw);
@@ -38,10 +38,30 @@ export async function streamingCheck(
   const { sock: rawSock } = await dial(parsedProxy, tHost, tPort, opts.connectTimeout * 1000);
   let sock: net.Socket | tls.TLSSocket = rawSock as net.Socket;
   if (u.protocol === 'https:') {
-    sock = tls.connect({ socket: rawSock as net.Socket, servername: tHost, rejectUnauthorized: !opts.insecure });
+    sock = tls.connect({ socket: rawSock as net.Socket, servername: tHost, rejectUnauthorized: opts.strictTLS ? true : !opts.insecure });
     await new Promise<void>((resolve, reject) => {
-      sock.once('connect', () => resolve());
-      sock.once('error', reject);
+      let tlsDone = false;
+      const tlsTimer = setTimeout(() => {
+        if (!tlsDone) {
+          tlsDone = true;
+          sock.destroy();
+          reject(new Error('TLS handshake timeout'));
+        }
+      }, opts.connectTimeout * 1000);
+      sock.once('secureConnect', () => {
+        if (!tlsDone) {
+          tlsDone = true;
+          clearTimeout(tlsTimer);
+          resolve();
+        }
+      });
+      sock.once('error', (e) => {
+        if (!tlsDone) {
+          tlsDone = true;
+          clearTimeout(tlsTimer);
+          reject(e);
+        }
+      });
     });
   }
 

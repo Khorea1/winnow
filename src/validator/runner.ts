@@ -65,7 +65,7 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
         abortSignal,
       );
 
-      if (res.status !== 200 && res.status !== 0) {
+      if (res.status !== 200) {
         return fail(trimmed, 'http', `HTTP ${res.status}`, { httpCode: res.status, latency: res.latency });
       }
 
@@ -80,11 +80,13 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
         return fail(trimmed, 'http', 'invalid content', { httpCode: res.status, latency: res.latency });
       }
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const err = e instanceof Error ? e : new Error(String(e));
+      const errCode = (err as Error & { code?: string }).code || '';
+      const msg = err.message;
       if (msg.includes('transparent')) {
         return fail(trimmed, 'http', 'transparent proxy');
       }
-      if (msg.includes('TLS invalid') || msg.includes('self-signed')) {
+      if (msg.includes('TLS invalid') || msg.includes('self-signed') || errCode === 'TLS_ERROR') {
         return fail(trimmed, 'tls', msg);
       }
       return fail(trimmed, 'http', msg);
@@ -128,10 +130,10 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
         streamingCheck(trimmed, streamUrl, {
           connectTimeout: opts.connectTimeout,
           maxTime: 25,
-          expectedChunks: 5,
           ttfbRatio: opts.ttfbRatio,
           maxGap: opts.maxGap,
           insecure: opts.insecure,
+          strictTLS: opts.strictTLS,
         }),
         abortSignal,
       );
@@ -146,7 +148,7 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
 
   if (abortSignal?.aborted) return fail(trimmed, 'cancelled', 'aborted');
 
-  // Stage D - streaming 20 + POST para strict
+  // Stage D - heavy streaming (no POST check yet)
   if (opts.mode === 'strict') {
     try {
       const stream20Url = `${opts.baseUrl.replace(/\/$/, '')}/stream/20?delay=0.1`;
@@ -154,14 +156,14 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
         streamingCheck(trimmed, stream20Url, {
           connectTimeout: opts.connectTimeout,
           maxTime: 35,
-          expectedChunks: 20,
           ttfbRatio: opts.ttfbRatio,
           maxGap: opts.maxGap,
           insecure: opts.insecure,
+          strictTLS: opts.strictTLS,
         }),
         abortSignal,
       );
-      if (res.chunks < 10) {
+      if (res.chunks < Math.max(1, Math.floor(20 * 0.5))) {
         return fail(trimmed, 'stream20', `insufficient chunks ${res.chunks}/20`, { chunks: res.chunks });
       }
     } catch (e: unknown) {
@@ -197,20 +199,21 @@ export async function runValidation(
       while (idx < queue.length && !abortSignal?.aborted) {
         const proxy = queue[idx++];
 
+        // Per-worker throttle — with N concurrent workers, effective rate is N / throttle
         if (opts.throttle > 0) {
           await new Promise((r) => setTimeout(r, opts.throttle));
         }
         if (abortSignal?.aborted) break;
 
         try {
-          let res = await validateSingleProxy(proxy, opts, abortSignal);
-          const sanitizedProxy = res.proxy.replace(/\/\/[^@]*@/, '//***:***@');
-          res = { ...res, proxy: sanitizedProxy };
-          results.push(res);
+          const res = await validateSingleProxy(proxy, opts, abortSignal);
+          const sanitizedProxy = res.proxy.replace(/\/\/([^:/]+):([^@]+)@/, '//***:***@');
+          const displayResult = { ...res, proxy: sanitizedProxy };
+          results.push(displayResult);
           if (res.valid) valid.push(res.proxy);
           else invalid.push({ proxy: sanitizedProxy, reason: res.error || 'error' });
           done++;
-          onProgress?.(res, { total, done, valid: valid.length, invalid: invalid.length });
+          onProgress?.(displayResult, { total, done, valid: valid.length, invalid: invalid.length });
           logger.debug(
             {
               proxy: sanitizedProxy,

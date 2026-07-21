@@ -113,13 +113,14 @@ export async function httpCheck(
         bodyStr = full;
       }
       if (opts.anonCheck && status === 200) {
+        const LEAKED_HEADERS = new Set(['x-forwarded-for', 'via', 'forwarded', 'x-real-ip', 'client-ip', 'x-client-ip', 'x-forwarded', 'x-forwarded-host']);
         const headerLines = headerStr.split('\r\n');
         for (let i = 1; i < headerLines.length; i++) {
           const line = headerLines[i];
           const sep = line.indexOf(':');
           if (sep === -1) continue;
           const name = line.slice(0, sep).trim().toLowerCase();
-          if (name === 'x-forwarded-for' || name === 'via') {
+          if (LEAKED_HEADERS.has(name)) {
             try {
               socket.destroy();
             } catch {}
@@ -150,6 +151,7 @@ export async function httpCheck(
         ttfb = firstByteTime - start;
       }
       if (buf.length + chunk.length > 2 * 1024 * 1024) {
+        done = true;
         socket.destroy();
         reject(new Error('response too large'));
         return;

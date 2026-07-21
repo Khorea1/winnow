@@ -8,11 +8,6 @@ import type { ProgressCallback, ValidatorOptions } from './types.js';
 
 const logger = createLogger('validator');
 
-export interface CliOptions extends Partial<ValidatorOptions> {
-  output?: string;
-  jsonOutput?: string;
-}
-
 interface ValidationConfigFragment {
   validationThreads?: number;
   validationMode?: 'quick' | 'standard' | 'strict' | 'stream' | 'tcp-only';
@@ -38,7 +33,15 @@ export function buildOptionsFromConfig(config: ValidationConfigFragment, overrid
   }
   return {
     threads: overrides.threads ?? config.validationThreads ?? 20,
-    mode: overrides.mode && validModes.includes(overrides.mode as ValidMode) ? (overrides.mode as ValidMode) : (configMode ?? 'quick'),
+    mode:
+      overrides.mode && validModes.includes(overrides.mode as ValidMode)
+        ? (overrides.mode as ValidMode)
+        : (() => {
+            if (overrides.mode && !validModes.includes(overrides.mode as ValidMode)) {
+              logger.warn({ mode: overrides.mode }, 'invalid CLI validation mode, falling back to config/default');
+            }
+            return configMode ?? 'quick';
+          })(),
     baseUrl: overrides.baseUrl ?? config.validationBaseUrl ?? 'http://httpbin.org',
     connectTimeout: overrides.connectTimeout ?? config.validationConnectTimeout ?? 4,
     maxLatency: overrides.maxLatency ?? config.validationMaxLatency ?? 7000,
