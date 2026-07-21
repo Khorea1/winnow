@@ -13,7 +13,7 @@ import { startSocketTimeout } from './timeout.js';
 const logger = createLogger('proxy');
 
 function shortId(): string {
-  return crypto.randomUUID().slice(0, 8);
+  return crypto.randomBytes(4).toString('hex');
 }
 
 // Hop-by-hop headers that MUST NOT be forwarded by an HTTP proxy (RFC 2616 §13.5.1).
@@ -37,6 +37,7 @@ const STRIPPED_REQUEST_HEADERS: Record<string, true> = {
 // Maximum acceptable size for upstream response headers (prevents unbounded
 // memory growth if the upstream sends data without a \r\n\r\n terminator).
 const MAX_RESPONSE_HEADER_BYTES = 32768;
+const MAX_BODY_BYTES = 10 * 1024 * 1024;
 let concurrentConnections = 0;
 const MAX_CONCURRENT_CONNECTIONS = 1000;
 export interface ProxyServerCtx {
@@ -137,6 +138,8 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
       try {
         clientSock.write('HTTP/1.1 200 Connection Established\r\n\r\n');
       } catch {
+        cancelTimeout?.();
+        failed = true;
         try {
           upSock.destroy();
         } catch {}
@@ -179,8 +182,8 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
         ctx.onRequestMetrics?.({ proxy: upstream.raw, target: targetKey, success: true, latency: totalLatency, bytes: totalBytes });
         logger.info({ reqId, proxy: upstream.raw, target: targetKey, bytes: totalBytes, latency: totalLatency }, 'tunnel completed');
       };
-      clientSock.on('error', () => {
-        /* client error does not penalize proxy */
+      clientSock.on('error', (err: Error) => {
+        logger.debug({ error: err.message, reqId }, 'client socket error');
       });
       // Must listen to upSock error to prevent unhandled error crashing the process
       upSock.on('error', (err: Error) => {
@@ -315,6 +318,7 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
           error: errMsg,
           errorCode: errCode,
           errorClass: classifyError(err),
+          bytes: upstreamBytes + requestBodyBytes,
         });
       };
       if (upHead?.length) {
@@ -354,7 +358,6 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
           }
         } catch {}
       });
-      const MAX_BODY_BYTES = 10 * 1024 * 1024;
       let bodyBytes = 0;
       // Manual body write with backpressure — avoids dual-listener race from req.pipe + req.on('data')
       if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -439,7 +442,8 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
                 error: `upstream ${statusCode}`,
                 errorClass: 'transient',
               });
-              markHttpFailure(new Error(`upstream ${statusCode}`));
+              ctx.health.recordFailure(upstream.raw, targetKey, { message: `upstream ${statusCode}` }, config);
+              // Don't set requestFailed = true — let the body flow through
             }
             // After filtering through HOP_BY_HOP, also process Connection header values
             let connectionValues: string[] = [];
@@ -484,6 +488,7 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
                 upstreamBytes += rest.length;
               }
             } catch {
+              cancelTimeout?.();
               markHttpFailure(new Error('failed to write response headers'));
               try {
                 upSock.destroy();
