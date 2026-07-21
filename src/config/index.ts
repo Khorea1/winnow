@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { isBlockedTarget } from '../proxy/dial.js';
+import { isBlockedTarget } from '../proxy/ssrf.js';
 
 // Config resolution path: WINNOW_CONFIG env > --config cli flag (set in index.ts) > default.
 // Default respects WINNOW_DATA_DIR / DATA_DIR / cwd.
@@ -123,8 +123,9 @@ function ensureString(value: unknown, def: string, validate?: (s: string) => boo
   return validate && !validate(s) ? def : s;
 }
 function ensureMode(value: unknown, def: 'quick' | 'standard' | 'strict' | 'stream' | 'tcp-only'): 'quick' | 'standard' | 'strict' | 'stream' | 'tcp-only' {
+  if (typeof value !== 'string') return def;
   const modes = new Set(['quick', 'standard', 'strict', 'stream', 'tcp-only']);
-  return modes.has(value as string) ? (value as 'quick' | 'standard' | 'strict' | 'stream' | 'tcp-only') : def;
+  return modes.has(value) ? (value as 'quick' | 'standard' | 'strict' | 'stream' | 'tcp-only') : def;
 }
 
 function sanitize(cfg: Record<string, unknown>): RotatorConfig {
@@ -146,16 +147,27 @@ function sanitize(cfg: Record<string, unknown>): RotatorConfig {
   c.validationMaxLatency = clampInt(c.validationMaxLatency, 500, 30000, DEFAULTS.validationMaxLatency);
   c.validationConnectTimeout = clampInt(c.validationConnectTimeout, 1, 30, DEFAULTS.validationConnectTimeout);
   c.validationThrottle = clampInt(c.validationThrottle, 0, 5000, DEFAULTS.validationThrottle);
+  c.validationThreads = clampInt(c.validationThreads, 1, 200, DEFAULTS.validationThreads);
   c.validationMode = ensureMode(c.validationMode, DEFAULTS.validationMode);
   c.validationTtfbRatio = clampInt(c.validationTtfbRatio, 1, 100, DEFAULTS.validationTtfbRatio);
   c.validationMaxGap = clampInt(c.validationMaxGap, 0, 60000, DEFAULTS.validationMaxGap);
-  c.validationTlsHost = ensureString(c.validationTlsHost, DEFAULTS.validationTlsHost);
+  c.validationTlsHost = ensureString(c.validationTlsHost, DEFAULTS.validationTlsHost, (s) => {
+    try {
+      return !isBlockedTarget(s);
+    } catch {
+      return false;
+    }
+  });
   c.validationTlsPort = clampInt(c.validationTlsPort, 1, 65535, DEFAULTS.validationTlsPort);
   c.maxFatalErrors = clampInt(c.maxFatalErrors, 1, 100, DEFAULTS.maxFatalErrors);
   c.fatalBanMs = clampNum(c.fatalBanMs, 1000, 7 * 24 * 60 * 60 * 1000, DEFAULTS.fatalBanMs);
   c.banBaseMs = clampNum(c.banBaseMs, 1000, 60 * 60 * 1000, DEFAULTS.banBaseMs);
   c.banMultiplier = clampNum(c.banMultiplier, 1, 10, DEFAULTS.banMultiplier);
   c.banMaxMs = clampNum(c.banMaxMs, Math.max(1000, c.banBaseMs), 24 * 60 * 60 * 1000, DEFAULTS.banMaxMs);
+  if (c.banMaxMs < c.banBaseMs) {
+    console.warn(`[CONFIG] banMaxMs (${c.banMaxMs}) < banBaseMs (${c.banBaseMs}), adjusting banMaxMs to banBaseMs`);
+    c.banMaxMs = c.banBaseMs;
+  }
   c.pruneAfterMs = clampNum(c.pruneAfterMs, 60 * 1000, 30 * 24 * 60 * 60 * 1000, DEFAULTS.pruneAfterMs);
   c.validationInsecure = !!c.validationInsecure;
   c.validationStrictTLS = !!c.validationStrictTLS;
@@ -166,6 +178,16 @@ function sanitize(cfg: Record<string, unknown>): RotatorConfig {
         .filter((t): t is string => typeof t === 'string')
         .map((t: string) => t.trim())
         .filter(Boolean)
+        .filter((t) => {
+          // SSRF check
+          const lastColon = t.lastIndexOf(':');
+          const host = lastColon === -1 ? t : t.slice(0, lastColon);
+          if (isBlockedTarget(host)) {
+            console.warn(`[CONFIG] target ${t} is blocked, removing`);
+            return false;
+          }
+          return true;
+        })
     : [];
   c.targets = trimmedTargets.length ? trimmedTargets : DEFAULTS.targets;
   c.upstreamIdleTimeout = clampNum(c.upstreamIdleTimeout, 0, 120000, 0);
@@ -199,10 +221,20 @@ export function loadConfig(): RotatorConfig {
       fs.writeFileSync(configPath, `${JSON.stringify(sanitize({ ...DEFAULTS }), null, 2)}\n`);
     }
   } catch (e: unknown) {
-    console.warn('[CONFIG] Error reading config:', (e as Error).message);
+    if (e instanceof SyntaxError) {
+      console.error('[CONFIG] Parse error in config file:', (e as Error).message);
+    } else {
+      console.warn('[CONFIG] Error reading config:', (e as Error).message);
+    }
   }
-  if (process.env.PROXY_FILE?.trim()) cfg.proxyFile = process.env.PROXY_FILE;
-  if (process.env.WINNOW_PROXY_FILE?.trim()) cfg.proxyFile = process.env.WINNOW_PROXY_FILE;
+  {
+    const proxyFile = process.env.PROXY_FILE?.trim();
+    if (proxyFile) cfg.proxyFile = proxyFile;
+  }
+  {
+    const winnowProxyFile = process.env.WINNOW_PROXY_FILE?.trim();
+    if (winnowProxyFile) cfg.proxyFile = winnowProxyFile;
+  }
   if (process.env.PORT?.trim()) cfg.port = parseInt(process.env.PORT.trim(), 10);
   if (process.env.WINNOW_PORT?.trim()) cfg.port = parseInt(process.env.WINNOW_PORT.trim(), 10);
   return sanitize(cfg);

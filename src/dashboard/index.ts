@@ -10,6 +10,7 @@ import { EventLog, type ProxyEvent } from '../events.js';
 import { type HealthEntry, HealthStore } from '../health/index.js';
 import { createLogger } from '../logger.js';
 import { parseLine } from '../proxy/dial.js';
+import { isBlockedTarget } from '../proxy/ssrf.js';
 import { buildOptionsFromConfig } from '../validator/index.js';
 import { runValidation } from '../validator/runner.js';
 import type { ProxyResult } from '../validator/types.js';
@@ -17,7 +18,12 @@ import type { ProxyResult } from '../validator/types.js';
 const logger = createLogger('dashboard');
 
 const _DASHBOARD_PATH = path.join(import.meta.dirname, '../../public/dashboard.html');
+let _unsubEventLog: (() => void) | undefined;
 let _dashboardHtml: string | null = null;
+export function unsubscribeDashboard() {
+  _unsubEventLog?.();
+  _unsubEventLog = undefined;
+}
 const MAX_BODY_SIZE = 32 * 1024;
 interface ValidationOverrides {
   threads?: number;
@@ -158,6 +164,9 @@ function serveDashboard(res: ServerResponse) {
     }
     res.writeHead(200, {
       'Content-Type': 'text/html; charset=utf-8',
+      // NOTE: script-src 'unsafe-inline' reduces XSS protection. Dashboard is a
+      // single static HTML with inline scripts — switching to nonce/hash would
+      // require restructuring dashboard.html (out of scope for this change).
       'Content-Security-Policy':
         "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'",
     });
@@ -200,7 +209,7 @@ export function registerDashboard(
 
   // LOG: subscribe to event log for live SSE broadcasting
   const eventSubscriber = (e: ProxyEvent) => broadcast(sseClients, 'proxy:event', e);
-  eventLog?.subscribe(eventSubscriber);
+  _unsubEventLog = eventLog?.subscribe(eventSubscriber);
 
   // LOG: periodic pool status events
   const poolInterval = setInterval(() => {
@@ -272,17 +281,18 @@ export function registerDashboard(
         return;
       }
 
-      // NOTE: proxy key may contain credentials — ensure it is not logged.
+      // NOTE: proxy key may contain credentials — prefer X-Proxy-Key header to
+      // avoid URL logging by reverse proxies. Query param remains as fallback.
       if (pathname === '/api/proxy' && req.method === 'DELETE') {
-        const key = urlObj.searchParams.get('key');
+        const key = (typeof req.headers['x-proxy-key'] === 'string' ? req.headers['x-proxy-key'] : urlObj.searchParams.get('key')) as string | null;
         if (!key) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Missing key parameter' }));
           return;
         }
         const proxyFile = cfgRef.current.proxyFile;
-        const resolvedPath = path.resolve(proxyFile);
-        if (!resolvedPath.startsWith(path.resolve(resolveDataDir()))) {
+        const abs = path.resolve(proxyFile);
+        if (!isSafeProxyFile(abs, resolveDataDir())) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Unsafe proxyFile' }));
           return;
@@ -319,8 +329,9 @@ export function registerDashboard(
             res.end(JSON.stringify({ error: 'Proxy not found' }));
             return;
           }
-          EventLog.safePush(eventLog, { type: 'pool', proxy: key, target: '', status: 'info', detail: 'removed via dashboard' });
-          broadcast(sseClients, 'proxy:removed', { key });
+          const safeKey = sanitizeProxyKey(key);
+          EventLog.safePush(eventLog, { type: 'pool', proxy: safeKey, target: '', status: 'info', detail: 'removed via dashboard' });
+          broadcast(sseClients, 'proxy:removed', { key: safeKey });
           respondJson(res, { removed: true, key, removedFromFile, removedFromHealth });
         } catch (e: unknown) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -330,10 +341,12 @@ export function registerDashboard(
       }
 
       if (pathname === '/events') {
-        // Prune dead clients before counting
+        // Prune dead clients before counting — collect first, delete after
+        const dead: ServerResponse[] = [];
         for (const client of sseClients) {
-          if (client.destroyed || client.writableEnded) sseClients.delete(client);
+          if (client.destroyed || client.writableEnded) dead.push(client);
         }
+        for (const d of dead) sseClients.delete(d);
         if (sseClients.size >= MAX_SSE_CLIENTS) {
           res.writeHead(503, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Too many SSE clients' }));
@@ -377,6 +390,15 @@ export function registerDashboard(
             custom = {};
           }
         }
+        // SSRF guard: prevent custom.baseUrl from pointing to internal hosts
+        if (custom.baseUrl && typeof custom.baseUrl === 'string') {
+          try {
+            const u = new URL(custom.baseUrl);
+            if (isBlockedTarget(u.hostname)) delete custom.baseUrl;
+          } catch {
+            delete custom.baseUrl;
+          }
+        }
         if (typeof custom.threads === 'number') custom.threads = Math.max(1, Math.min(100, Math.floor(custom.threads)));
         if (typeof custom.connectTimeout === 'number') custom.connectTimeout = Math.max(1, Math.min(60, Math.floor(custom.connectTimeout)));
         if (typeof custom.maxLatency === 'number') custom.maxLatency = Math.max(100, Math.min(60000, custom.maxLatency));
@@ -388,6 +410,11 @@ export function registerDashboard(
           custom.tlsHost = typeof custom.tlsHost === 'string' ? custom.tlsHost.trim() : undefined;
           if (custom.tlsHost && (custom.tlsHost.includes('\0') || custom.tlsHost.length > 255)) {
             delete custom.tlsHost;
+          }
+          // SSRF guard: prevent tlsHost from pointing to internal hosts
+          if (custom.tlsHost && typeof custom.tlsHost === 'string') {
+            const host = custom.tlsHost.trim();
+            if (isBlockedTarget(host)) delete custom.tlsHost;
           }
         }
         if (custom.mode !== undefined && !['quick', 'standard', 'strict', 'stream', 'tcp-only'].includes(custom.mode)) {
