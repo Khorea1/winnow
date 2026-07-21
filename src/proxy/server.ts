@@ -5,8 +5,10 @@ import type { RotatorConfig } from '../config/index.js';
 import { EventLog } from '../events.js';
 import { classifyError, type HealthStore } from '../health/index.js';
 import { createLogger } from '../logger.js';
-import { isBlockedTarget, type ParsedProxy, parseHostPort } from './dial.js';
+import { type ParsedProxy, parseHostPort } from './dial.js';
 import { tryWithRetry } from './rotator.js';
+import { isBlockedTarget } from './ssrf.js';
+import { startSocketTimeout } from './timeout.js';
 
 const logger = createLogger('proxy');
 
@@ -22,7 +24,6 @@ const HOP_BY_HOP: Record<string, true> = {
   'proxy-authorization': true,
   te: true,
   trailer: true,
-  'transfer-encoding': true,
   upgrade: true,
   'proxy-connection': true,
 };
@@ -38,45 +39,6 @@ const STRIPPED_REQUEST_HEADERS: Record<string, true> = {
 const MAX_RESPONSE_HEADER_BYTES = 32768;
 let concurrentConnections = 0;
 const MAX_CONCURRENT_CONNECTIONS = 1000;
-
-// ── Upstream timeout helpers ──────────────────────────────────────────────
-// TTFB + idle timeout for single-socket upstream or bi-directional CONNECT.
-function startSocketTimeout(sockets: net.Socket[], ttfbMs: number, idleMs: number, onTimeout: () => void): () => void {
-  let ttfbTimer: NodeJS.Timeout | null = setTimeout(() => {
-    if (ttfbTimer === null) return;
-    const t = idleTimer;
-    ttfbTimer = null;
-    idleTimer = null;
-    if (t) clearTimeout(t);
-    onTimeout();
-  }, ttfbMs);
-  let idleTimer: NodeJS.Timeout | null = null;
-
-  function onData() {
-    if (ttfbTimer) {
-      clearTimeout(ttfbTimer);
-      ttfbTimer = null;
-      idleTimer = setTimeout(onTimeout, idleMs);
-    } else if (idleTimer) {
-      clearTimeout(idleTimer);
-      idleTimer = setTimeout(onTimeout, idleMs);
-    }
-  }
-
-  for (const s of sockets) s.on('data', onData);
-
-  return function cancel() {
-    if (ttfbTimer) {
-      clearTimeout(ttfbTimer);
-      ttfbTimer = null;
-    }
-    if (idleTimer) {
-      clearTimeout(idleTimer);
-      idleTimer = null;
-    }
-    for (const s of sockets) s.off('data', onData);
-  };
-}
 export interface ProxyServerCtx {
   config: { current: RotatorConfig };
   health: HealthStore;
@@ -97,16 +59,28 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
     const reqId = shortId();
     const parsed = parseHostPort(req.url || '', 443);
     if (!parsed) {
-      clientSock.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+      try {
+        clientSock.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+      } catch {
+        return;
+      }
       return;
     }
     const { host: tHost, port: tPort } = parsed;
     if (isBlockedTarget(tHost)) {
-      clientSock.end('HTTP/1.1 403 Forbidden\r\n\r\n');
+      try {
+        clientSock.end('HTTP/1.1 403 Forbidden\r\n\r\n');
+      } catch {
+        return;
+      }
       return;
     }
     if (concurrentConnections >= MAX_CONCURRENT_CONNECTIONS) {
-      clientSock.end('HTTP/1.1 503 Service Unavailable\r\n\r\n');
+      try {
+        clientSock.end('HTTP/1.1 503 Service Unavailable\r\n\r\n');
+      } catch {
+        return;
+      }
       return;
     }
     concurrentConnections++;
@@ -232,7 +206,6 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
         if (failed) return;
         const elapsed = Date.now() - start;
         if (elapsed < 500 && bytesDown === 0 && bytesUp < 100) {
-          EventLog.safePush(el, { type: 'connect', proxy: upstream.raw, target: targetKey, status: 'failure', error: 'early close', errorClass: 'transient' });
           markFailure(new Error('early close'));
         } else {
           markSuccess();
@@ -279,8 +252,10 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
     const el = ctx.eventLog;
     let targetKey = '';
     if (concurrentConnections >= MAX_CONCURRENT_CONNECTIONS) {
-      res.writeHead(503, { 'Content-Type': 'text/plain' });
-      res.end('Service Unavailable');
+      try {
+        res.writeHead(503, { 'Content-Type': 'text/plain' });
+        res.end('Service Unavailable');
+      } catch {}
       return;
     }
     concurrentConnections++;
@@ -351,10 +326,10 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
         reqHeaderLines += `${k}: ${v}\r\n`;
       }
       // Use targetUrl.host to include port when non-default (e.g. Host: example.com:8080)
-      const reqLine = `${req.method} ${pathAndQuery} HTTP/1.1\r\nHost: ${targetUrl.host}\r\n${reqHeaderLines}Connection: keep-alive\r\n\r\n`;
+      const reqLine = `${req.method} ${pathAndQuery} HTTP/1.1\r\nHost: ${targetUrl.host}\r\n${reqHeaderLines}Connection: close\r\n\r\n`;
       upSock.write(reqLine);
       // Also watch client socket — slow client body send shouldn't kill upstream timeout
-      cancelTimeout = startSocketTimeout([upSock, req.socket], config.timeout, config.upstreamIdleTimeout || config.timeout * 2, () => {
+      cancelTimeout = startSocketTimeout([upSock, req.socket], Math.max(config.timeout, 15000), config.upstreamIdleTimeout || config.timeout * 2, () => {
         if (requestFailed) return;
         requestFailed = true;
         ctx.health.recordFailure(upstream.raw, targetKey, { message: 'upstream timeout' }, config);
@@ -512,6 +487,7 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
             { reqId, proxy: upstream.raw, target: targetKey, statusCode, bytes: upstreamBytes + requestBodyBytes, latency: totalTime },
             'http request completed',
           );
+          requestFailed = true;
         } else if (!requestFailed && !headerParsed) {
           markHttpFailure(new Error('upstream closed before response'));
           ctx.onRequestMetrics?.({ proxy: upstream.raw, target: targetKey, success: false, latency: totalTime, bytes: upstreamBytes + requestBodyBytes });
@@ -541,6 +517,7 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
       });
       res.on('close', () => {
         cancelTimeout?.();
+        requestFailed = true;
         try {
           upSock.destroy();
         } catch {}
