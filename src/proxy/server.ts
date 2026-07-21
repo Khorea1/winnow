@@ -399,20 +399,29 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
             }
             try {
               res.writeHead(statusCode, headers);
-              if (rest.length) res.write(rest);
+              headerParsed = true;
+              respBuf = Buffer.alloc(0);
+              if (rest.length) {
+                if (!res.write(rest)) {
+                  upSock.pause();
+                }
+                upstreamBytes += rest.length;
+              }
             } catch {}
-            upstreamBytes += rest.length;
-            headerParsed = true;
-            respBuf = Buffer.alloc(0);
           } else {
             respBuf = combined;
           }
         } else {
           try {
-            res.write(chunk);
+            if (!res.write(chunk)) {
+              upSock.pause();
+            }
           } catch {}
           upstreamBytes += chunk.length;
         }
+      });
+      res.on('drain', () => {
+        upSock.resume();
       });
 
       upSock.on('end', () => {
