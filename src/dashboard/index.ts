@@ -10,7 +10,7 @@ import { EventLog, type ProxyEvent } from '../events.js';
 import { type HealthEntry, HealthStore } from '../health/index.js';
 import { createLogger } from '../logger.js';
 import { parseLine } from '../proxy/dial.js';
-import { isBlockedTarget } from '../proxy/ssrf.js';
+import { isBlockedAfterDns, isBlockedTarget } from '../proxy/ssrf.js';
 import { buildOptionsFromConfig } from '../validator/index.js';
 import { runValidation } from '../validator/runner.js';
 import type { ProxyResult } from '../validator/types.js';
@@ -19,10 +19,14 @@ const logger = createLogger('dashboard');
 
 const _DASHBOARD_PATH = path.join(import.meta.dirname, '../../public/dashboard.html');
 let _unsubEventLog: (() => void) | undefined;
+let _healthHandler: ((data: unknown) => void) | undefined;
+let _unsubHealth: (() => void) | undefined;
 let _dashboardHtml: string | null = null;
 export function unsubscribeDashboard() {
   _unsubEventLog?.();
   _unsubEventLog = undefined;
+  _unsubHealth?.();
+  _unsubHealth = undefined;
 }
 const MAX_BODY_SIZE = 32 * 1024;
 interface ValidationOverrides {
@@ -73,18 +77,22 @@ function isAuthorized(req: IncomingMessage): boolean {
   return false;
 }
 function isSafeProxyFile(p: string, allowedDir: string): boolean {
-  if (typeof p !== 'string' || !p) return false;
-  if (p.includes('\0')) return false;
-  try {
-    const abs = path.isAbsolute(p) ? p : path.resolve(allowedDir, p);
-    // Resolve symlinks on the file itself, not just the directory — prevents
-    // path traversal via a symlink pointing outside the allowed directory.
-    const realFile = fs.realpathSync(abs);
-    const realAllowedDir = fs.realpathSync(allowedDir);
-    return realFile === realAllowedDir || realFile.startsWith(realAllowedDir + path.sep);
-  } catch {
-    return false;
+  // Normalize the path
+  const resolved = path.resolve(p);
+  // If path is within allowedDir, it's safe
+  if (resolved.startsWith(allowedDir + path.sep) || resolved === allowedDir) return true;
+  // For absolute paths outside allowedDir, verify they point to an actual file
+  // and don't contain path traversal components
+  if (path.isAbsolute(p)) {
+    const normalized = path.normalize(p);
+    if (normalized.includes('..')) return false;
+    try {
+      return fs.existsSync(normalized);
+    } catch {
+      return false;
+    }
   }
+  return false;
 }
 function sanitizeProxyKey(key: string): string {
   try {
@@ -120,11 +128,12 @@ function readBody(req: IncomingMessage, res: ServerResponse): Promise<string | n
   const chunks: Buffer[] = [];
   let totalBytes = 0;
   let tooLarge = false;
+  let _resolved = false;
   req.on('data', (c: Buffer) => {
     if (tooLarge) return;
     chunks.push(c);
     totalBytes += c.length;
-    if (totalBytes >= MAX_BODY_SIZE) {
+    if (totalBytes > MAX_BODY_SIZE) {
       tooLarge = true;
       try {
         res.writeHead(413, { 'Content-Type': 'application/json' });
@@ -132,18 +141,28 @@ function readBody(req: IncomingMessage, res: ServerResponse): Promise<string | n
       } catch {}
       chunks.length = 0; // free chunk references immediately
       req.resume();
+      _resolved = true;
       resolve(null); // Resolve immediately to prevent dangling promises
     }
   });
   req.on('end', () => {
     if (tooLarge) return;
     const body = Buffer.concat(chunks).toString('utf8');
+    _resolved = true;
     resolve(body);
     chunks.length = 0; // free memory after consuming body
   });
   // Prevent hanging promise if the client disconnects mid-request
-  req.on('error', () => resolve(null));
-  req.on('close', () => resolve(null));
+  req.on('error', (e) => {
+    logger.warn({ error: e instanceof Error ? e.message : String(e) }, 'readBody request error');
+    resolve(null);
+  });
+  req.on('close', () => {
+    if (!_resolved) {
+      logger.warn({}, 'readBody premature close');
+      resolve(null);
+    }
+  });
   return promise;
 }
 
@@ -164,6 +183,7 @@ function serveDashboard(res: ServerResponse) {
     }
     res.writeHead(200, {
       'Content-Type': 'text/html; charset=utf-8',
+      'X-Content-Type-Options': 'nosniff',
       // NOTE: script-src 'unsafe-inline' reduces XSS protection. Dashboard is a
       // single static HTML with inline scripts — switching to nonce/hash would
       // require restructuring dashboard.html (out of scope for this change).
@@ -203,9 +223,13 @@ export function registerDashboard(
   let _validationRunning = false;
   let _abortController: AbortController | null = null;
 
-  health.on('health:update', (data: unknown) => {
+  _healthHandler = (data: unknown) => {
     broadcast(sseClients, 'health:update', data);
-  });
+  };
+  health.on('health:update', _healthHandler);
+  _unsubHealth = () => {
+    if (_healthHandler) health.off('health:update', _healthHandler);
+  };
 
   // LOG: subscribe to event log for live SSE broadcasting
   const eventSubscriber = (e: ProxyEvent) => broadcast(sseClients, 'proxy:event', e);
@@ -266,7 +290,7 @@ export function registerDashboard(
         if (body === null) return;
         try {
           const patch = JSON.parse(body);
-          const updated = updateConfig(patch);
+          const updated = updateConfig(patch, { ...cfgRef.current });
           Object.assign(cfgRef.current, updated);
           // Refresh server-level timeouts from current config
           if (typeof updated.timeout === 'number') {
@@ -282,9 +306,9 @@ export function registerDashboard(
       }
 
       // NOTE: proxy key may contain credentials — prefer X-Proxy-Key header to
-      // avoid URL logging by reverse proxies. Query param remains as fallback.
+      // avoid URL logging by reverse proxies.
       if (pathname === '/api/proxy' && req.method === 'DELETE') {
-        const key = (typeof req.headers['x-proxy-key'] === 'string' ? req.headers['x-proxy-key'] : urlObj.searchParams.get('key')) as string | null;
+        const key = (typeof req.headers['x-proxy-key'] === 'string' ? req.headers['x-proxy-key'] : null) as string | null;
         if (!key) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Missing key parameter' }));
@@ -332,7 +356,7 @@ export function registerDashboard(
           const safeKey = sanitizeProxyKey(key);
           EventLog.safePush(eventLog, { type: 'pool', proxy: safeKey, target: '', status: 'info', detail: 'removed via dashboard' });
           broadcast(sseClients, 'proxy:removed', { key: safeKey });
-          respondJson(res, { removed: true, key, removedFromFile, removedFromHealth });
+          respondJson(res, { removed: true, key: safeKey, removedFromFile, removedFromHealth });
         } catch (e: unknown) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
@@ -387,14 +411,15 @@ export function registerDashboard(
           try {
             custom = JSON.parse(body);
           } catch {
-            custom = {};
+            respondJson(res, { error: 'Invalid JSON in request body' }, 400);
+            return;
           }
         }
         // SSRF guard: prevent custom.baseUrl from pointing to internal hosts
         if (custom.baseUrl && typeof custom.baseUrl === 'string') {
           try {
             const u = new URL(custom.baseUrl);
-            if (isBlockedTarget(u.hostname)) delete custom.baseUrl;
+            if (isBlockedTarget(u.hostname) || (await isBlockedAfterDns(u.hostname))) delete custom.baseUrl;
           } catch {
             delete custom.baseUrl;
           }
@@ -413,8 +438,7 @@ export function registerDashboard(
           }
           // SSRF guard: prevent tlsHost from pointing to internal hosts
           if (custom.tlsHost && typeof custom.tlsHost === 'string') {
-            const host = custom.tlsHost.trim();
-            if (isBlockedTarget(host)) delete custom.tlsHost;
+            if (isBlockedTarget(custom.tlsHost) || (await isBlockedAfterDns(custom.tlsHost))) delete custom.tlsHost;
           }
         }
         if (custom.mode !== undefined && !['quick', 'standard', 'strict', 'stream', 'tcp-only'].includes(custom.mode)) {
@@ -499,6 +523,7 @@ export function registerDashboard(
         return;
       }
     } catch (e: unknown) {
+      logger.error({ error: e instanceof Error ? e.message : String(e) }, 'dashboard: unhandled request error');
       try {
         respondJson(res, { error: e instanceof Error ? e.message : String(e) }, 500);
       } catch {}
