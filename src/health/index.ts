@@ -76,6 +76,14 @@ export class HealthStore extends EventEmitter {
   delete(proxy: string) {
     this._data.delete(proxy);
     this._deleted.add(proxy);
+    // Clean up any pending dirty keys for this proxy
+    const prefix = `${proxy}\x00`;
+    for (const key of this._dirty) {
+      if (key.startsWith(prefix)) this._dirty.delete(key);
+    }
+    for (const key of this._pendingUpdates) {
+      if (key.startsWith(prefix)) this._pendingUpdates.delete(key);
+    }
   }
 
   dirty(proxy: string) {
@@ -111,17 +119,26 @@ export class HealthStore extends EventEmitter {
   private _scheduleFlushUpdates() {
     if (this._pendingEmitScheduled) return;
     this._pendingEmitScheduled = true;
-    queueMicrotask(() => this._flushUpdates());
+    queueMicrotask(() => {
+      try {
+        this._flushUpdates();
+      } finally {
+        this._pendingEmitScheduled = false;
+      }
+    });
   }
 
   private _flushUpdates() {
-    this._pendingEmitScheduled = false;
     const now = Date.now();
     for (const key of this._pendingUpdates) {
       const sep = key.indexOf('\x00');
       const proxy = key.slice(0, sep);
       const target = key.slice(sep + 1);
-      this.emit('health:update', { proxy, target, time: now });
+      try {
+        this.emit('health:update', { proxy, target, time: now });
+      } catch {
+        // listener errors never crash the app
+      }
     }
     this._pendingUpdates.clear();
   }
@@ -335,10 +352,10 @@ export class HealthStore extends EventEmitter {
           errors: r.errors ?? 0,
           successes: r.successes ?? 0,
           latency: r.latency ?? 9999,
-          bannedUntil: r.banned_until ?? 0,
-          lastOk: r.last_ok ?? 0,
+          bannedUntil: (r.banned_until ?? 0) > 0 ? r.banned_until! : 0,
+          lastOk: (r.last_ok ?? 0) > 0 ? r.last_ok! : 0,
           fatalErrors: r.fatal_errors ?? 0,
-          frozenUntil: r.frozen_until > 0 ? r.frozen_until : 0,
+          frozenUntil: (r.frozen_until ?? 0) > 0 ? r.frozen_until! : 0,
         });
         count++;
       }
@@ -365,7 +382,7 @@ export class HealthStore extends EventEmitter {
         logger.warn({ error: e instanceof Error ? e.message : String(e) }, 'delete transaction error');
         failed.push(...this._deleted);
       }
-      this._deleted = new Set(failed);
+      this._deleted = new Set(failed.filter((p) => !this._data.has(p)));
     }
     if (!this._dirty.size) return;
     const entries = [...this._dirty];
