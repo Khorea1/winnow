@@ -77,22 +77,18 @@ function isAuthorized(req: IncomingMessage): boolean {
   return false;
 }
 function isSafeProxyFile(p: string, allowedDir: string): boolean {
-  // Normalize the path
-  const resolved = path.resolve(p);
-  // If path is within allowedDir, it's safe
-  if (resolved.startsWith(allowedDir + path.sep) || resolved === allowedDir) return true;
-  // For absolute paths outside allowedDir, verify they point to an actual file
-  // and don't contain path traversal components
-  if (path.isAbsolute(p)) {
-    const normalized = path.normalize(p);
-    if (normalized.includes('..')) return false;
-    try {
+  try {
+    const resolved = fs.realpathSync(p);
+    if (resolved.startsWith(allowedDir + path.sep) || resolved === allowedDir) return true;
+    if (path.isAbsolute(p)) {
+      const normalized = path.normalize(p);
+      if (normalized.includes('..')) return false;
       return fs.existsSync(normalized);
-    } catch {
-      return false;
     }
+    return false;
+  } catch {
+    return false;
   }
-  return false;
 }
 function sanitizeProxyKey(key: string): string {
   try {
@@ -107,7 +103,7 @@ function sanitizeProxyKey(key: string): string {
   } catch {
     // URL parsing failed — likely protocol-less string with credentials
     // Strip user:password@ prefix if present
-    return key.replace(/^.*@/, '');
+    return key.replace(/^[^@]*@/, '');
   }
 }
 
@@ -120,6 +116,10 @@ function respondJson(res: ServerResponse, data: unknown, status = 200) {
     res.writeHead(status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(data));
   } catch {}
+}
+
+function sanitizeError(_e: unknown): string {
+  return 'Internal server error';
 }
 
 /** Read request body with size limit. Returns null and sends 413 if too large. */
@@ -188,7 +188,7 @@ function serveDashboard(res: ServerResponse) {
       // single static HTML with inline scripts — switching to nonce/hash would
       // require restructuring dashboard.html (out of scope for this change).
       'Content-Security-Policy':
-        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'",
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; base-uri 'self'",
     });
     res.end(_dashboardHtml);
   } catch (e: unknown) {
@@ -203,6 +203,10 @@ function broadcast(clients: Set<ServerResponse>, event: string, data: unknown) {
   const MAX_BUFFER = 64 * 1024; // 64KB per client
   for (const res of clients) {
     try {
+      if (res.destroyed || res.writableEnded) {
+        dead.push(res);
+        continue;
+      }
       if (res.writableLength > MAX_BUFFER) {
         dead.push(res);
         continue;
@@ -365,7 +369,7 @@ export function registerDashboard(
           respondJson(res, { removed: true, key: safeKey, removedFromFile, removedFromHealth });
         } catch (e: unknown) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
+          res.end(JSON.stringify({ error: sanitizeError(e) }));
         }
         return;
       }
@@ -382,6 +386,8 @@ export function registerDashboard(
           res.end(JSON.stringify({ error: 'Too many SSE clients' }));
           return;
         }
+        // Check if client already disconnected
+        if (res.destroyed || res.writableEnded) return;
         const corsOrigin = process.env.WINNOW_CORS_ORIGIN;
         res.writeHead(200, {
           'Content-Type': 'text/event-stream',
@@ -430,7 +436,7 @@ export function registerDashboard(
             delete custom.baseUrl;
           }
         }
-        if (typeof custom.threads === 'number') custom.threads = Math.max(1, Math.min(100, Math.floor(custom.threads)));
+        if (typeof custom.threads === 'number') custom.threads = Math.max(1, Math.min(200, Math.floor(custom.threads)));
         if (typeof custom.connectTimeout === 'number') custom.connectTimeout = Math.max(1, Math.min(60, Math.floor(custom.connectTimeout)));
         if (typeof custom.maxLatency === 'number') custom.maxLatency = Math.max(100, Math.min(60000, custom.maxLatency));
         if (typeof custom.throttle === 'number') custom.throttle = Math.max(0, Math.min(10000, custom.throttle));
@@ -439,13 +445,14 @@ export function registerDashboard(
         if (custom.tlsPort !== undefined) custom.tlsPort = Math.max(1, Math.min(65535, Math.floor(custom.tlsPort)));
         if (custom.tlsHost !== undefined) {
           custom.tlsHost = typeof custom.tlsHost === 'string' ? custom.tlsHost.trim() : undefined;
-          if (custom.tlsHost && (custom.tlsHost.includes('\0') || custom.tlsHost.length > 255)) {
-            delete custom.tlsHost;
-          }
+        }
+        if (!custom.tlsHost) {
+          delete custom.tlsHost;
+        } else if (custom.tlsHost.includes('\0') || custom.tlsHost.length > 255) {
+          delete custom.tlsHost;
+        } else {
           // SSRF guard: prevent tlsHost from pointing to internal hosts
-          if (custom.tlsHost && typeof custom.tlsHost === 'string') {
-            if (isBlockedTarget(custom.tlsHost) || (await isBlockedAfterDns(custom.tlsHost))) delete custom.tlsHost;
-          }
+          if (isBlockedTarget(custom.tlsHost) || (await isBlockedAfterDns(custom.tlsHost))) delete custom.tlsHost;
         }
         if (custom.mode !== undefined && !['quick', 'standard', 'strict', 'stream', 'tcp-only'].includes(custom.mode)) {
           delete custom.mode;
@@ -470,7 +477,7 @@ export function registerDashboard(
           const rows = db.prepare('SELECT * FROM validation_runs ORDER BY id DESC LIMIT 20').all();
           respondJson(res, rows);
         } catch (e: unknown) {
-          respondJson(res, { error: e instanceof Error ? e.message : String(e) }, 500);
+          respondJson(res, { error: sanitizeError(e) }, 500);
         }
         return;
       }
@@ -531,7 +538,7 @@ export function registerDashboard(
     } catch (e: unknown) {
       logger.error({ error: e instanceof Error ? e.message : String(e) }, 'dashboard: unhandled request error');
       try {
-        respondJson(res, { error: e instanceof Error ? e.message : String(e) }, 500);
+        respondJson(res, { error: sanitizeError(e) }, 500);
       } catch {}
     }
   });
@@ -584,9 +591,9 @@ export function registerDashboard(
       maxGap: custom.maxGap ?? cfg.validationMaxGap,
     });
 
-    const runId = createValidationRun(ctx.db);
     _validationRunning = true;
     _abortController = new AbortController();
+    const runId = createValidationRun(ctx.db);
 
     respondJson(res, { jobId: runId, mode: opts.mode, threads: opts.threads, started: Date.now() });
 
