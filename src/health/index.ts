@@ -94,6 +94,10 @@ export class HealthStore extends EventEmitter {
       byTarget = new Map();
       this._data.set(proxy, byTarget);
     }
+    if (!byTarget.has('*')) {
+      byTarget.set('*', blankEntry());
+      this._dirty.add(this._key(proxy, '*'));
+    }
     byTarget.set(target, val);
     this._dirty.add(this._key(proxy, target));
   }
@@ -139,9 +143,7 @@ export class HealthStore extends EventEmitter {
         this.dirtyTarget(proxy, target);
       } else {
         const ne = blankEntry();
-        ne.successes = 1;
-        ne.latency = latency;
-        ne.lastOk = now;
+        applySuccess(ne, latency, now);
         this.setTarget(proxy, target, ne);
         this.dirtyTarget(proxy, target);
       }
@@ -164,23 +166,28 @@ export class HealthStore extends EventEmitter {
     const wasBanned = star.bannedUntil > now;
     const wasFrozen = star.frozenUntil > now;
     const previousFrozenUntil = star.frozenUntil;
-    applyFailure(star, err, config, now);
+    const errorClass = classifyError(err);
+    applyFailure(star, err, config, now, errorClass);
     if (target && target !== '*') {
       const te = this.getTarget(proxy, target);
       if (te) {
-        applyFailure(te, err, config, now);
+        applyFailure(te, err, config, now, errorClass);
         this.dirtyTarget(proxy, target);
       } else {
         const ne = blankEntry();
-        applyFailure(ne, err, config, now);
+        applyFailure(ne, err, config, now, errorClass);
         this.setTarget(proxy, target, ne);
         this.dirtyTarget(proxy, target);
       }
     }
     this.dirty(proxy);
     // LOG: emit ban/freeze events only on state transitions
-    const errorClass = classifyError(err);
-    const errMsg = err instanceof Error ? err.message : String(err);
+    const errMsg =
+      err instanceof Error
+        ? err.message
+        : typeof err === 'object' && err !== null
+          ? String((err as Record<string, unknown>).message ?? String(err))
+          : String(err);
     logger.warn({ proxy, target: target || '*', errorClass, error: errMsg }, 'failure recorded');
     if (!wasBanned && star.bannedUntil > now) {
       EventLog.safePush(this._eventLog, {
@@ -233,7 +240,7 @@ export class HealthStore extends EventEmitter {
           e.bannedUntil = demotedTo;
           this._dirty.add(this._key(proxy, target));
           // Decay fatal errors so one more fatal re-freezes
-          e.fatalErrors = Math.max(0, e.fatalErrors - (maxFatalErrors - 1));
+          e.fatalErrors = Math.max(0, e.fatalErrors - (maxFatalErrors - 2));
           e.errors = 0;
           count++;
           // LOG: emit unban event on boot thaw
@@ -325,11 +332,11 @@ export class HealthStore extends EventEmitter {
       }
       if (!byTarget.has(r.target)) {
         byTarget.set(r.target, {
-          errors: r.errors,
-          successes: r.successes,
-          latency: r.latency,
-          bannedUntil: r.banned_until,
-          lastOk: r.last_ok,
+          errors: r.errors ?? 0,
+          successes: r.successes ?? 0,
+          latency: r.latency ?? 9999,
+          bannedUntil: r.banned_until ?? 0,
+          lastOk: r.last_ok ?? 0,
           fatalErrors: r.fatal_errors ?? 0,
           frozenUntil: r.frozen_until > 0 ? r.frozen_until : 0,
         });
@@ -342,23 +349,32 @@ export class HealthStore extends EventEmitter {
   private _flush() {
     if (this._deleted.size) {
       const failed: string[] = [];
-      for (const p of this._deleted) {
-        try {
-          removeProxyHealth(this.db, p);
-        } catch {
-          failed.push(p);
+      const doDelete = () => {
+        for (const p of this._deleted) {
+          try {
+            removeProxyHealth(this.db, p);
+          } catch (e: unknown) {
+            failed.push(p);
+            logger.warn({ proxy: p, error: e instanceof Error ? e.message : String(e) }, 'delete health error');
+          }
         }
+      };
+      try {
+        this.db.transaction(doDelete)();
+      } catch (e: unknown) {
+        logger.warn({ error: e instanceof Error ? e.message : String(e) }, 'delete transaction error');
+        failed.push(...this._deleted);
       }
       this._deleted = new Set(failed);
     }
     if (!this._dirty.size) return;
     const entries = [...this._dirty];
-    this._dirty.clear();
     const BATCH_SIZE = 200;
     const batches: string[][] = [];
     for (let i = 0; i < entries.length; i += BATCH_SIZE) {
       batches.push(entries.slice(i, i + BATCH_SIZE));
     }
+    const failedKeys = new Set<string>();
     for (const batch of batches) {
       const rows: HealthRowInput[] = [];
       for (const key of batch) {
@@ -366,9 +382,15 @@ export class HealthStore extends EventEmitter {
         const proxy = key.slice(0, sep);
         const target = key.slice(sep + 1);
         const byTarget = this._data.get(proxy);
-        if (!byTarget) continue;
+        if (!byTarget) {
+          failedKeys.add(key);
+          continue;
+        }
         const h = byTarget.get(target);
-        if (!h) continue;
+        if (!h) {
+          failedKeys.add(key);
+          continue;
+        }
         rows.push({
           proxy,
           target,
@@ -386,9 +408,11 @@ export class HealthStore extends EventEmitter {
           insertHealth(this.db, rows);
         } catch (e: unknown) {
           logger.warn({ error: e instanceof Error ? e.message : String(e) }, 'flush error');
-          for (const key of batch) this._dirty.add(key);
+          for (const key of batch) failedKeys.add(key);
         }
       }
     }
+    this._dirty.clear();
+    for (const key of failedKeys) this._dirty.add(key);
   }
 }

@@ -73,9 +73,11 @@ export function applyFailure(
   e: unknown,
   config: { maxFatalErrors: number; fatalBanMs: number; banBaseMs: number; banMultiplier: number; banMaxMs: number },
   now: number,
+  preclassified?: 'fatal' | 'transient',
 ) {
-  if (classifyError(e) === 'fatal') {
-    h.fatalErrors++;
+  const cls = preclassified ?? classifyError(e);
+  if (cls === 'fatal') {
+    if (h.fatalErrors < config.maxFatalErrors) h.fatalErrors++;
     if (h.fatalErrors >= config.maxFatalErrors) {
       h.frozenUntil = now + config.fatalBanMs * 3;
     } else {
