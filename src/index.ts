@@ -71,9 +71,27 @@ if (cliConfig?.trim()) {
 const config = loadConfig();
 
 // Apply CLI overrides to config (only when the flag was actually passed)
-if (cliPort !== undefined) config.port = cliPort;
-if (cliProxyFile !== undefined) config.proxyFile = path.resolve(cliProxyFile);
-if (cliTimeout !== undefined) config.timeout = cliTimeout;
+if (cliPort !== undefined) {
+  if (cliPort >= 1 && cliPort <= 65535) {
+    config.port = cliPort;
+  } else {
+    console.error(`Invalid --port value ${cliPort}, using config value ${config.port}`);
+  }
+}
+if (cliProxyFile !== undefined) {
+  if (!cliProxyFile.includes('\0')) {
+    config.proxyFile = path.resolve(cliProxyFile);
+  } else {
+    console.error('Invalid --proxy-file value contains null byte, using config value');
+  }
+}
+if (cliTimeout !== undefined) {
+  if (cliTimeout >= 500 && cliTimeout <= 60000) {
+    config.timeout = cliTimeout;
+  } else {
+    console.error(`Invalid --timeout value ${cliTimeout}, using config value ${config.timeout}`);
+  }
+}
 
 const validModes = ['quick', 'standard', 'strict', 'stream', 'tcp-only'];
 if (cliValidationMode !== undefined) {
@@ -238,22 +256,33 @@ server.on('error', (err: NodeJS.ErrnoException) => {
   }
   shutdown('server_error');
 });
-// Write PID file for graceful stop
 try {
   const pidPath = path.join(resolveDataDir(), '.winnow.pid');
   try {
-    const existingPid = fs.readFileSync(pidPath, 'utf8').trim();
-    if (existingPid) {
-      try {
-        process.kill(parseInt(existingPid, 10), 0);
-        console.error(`Another instance already running (PID ${existingPid}). Exiting.`);
-        process.exit(1);
-      } catch (e: unknown) {
-        if ((e as NodeJS.ErrnoException).code !== 'ESRCH') throw e;
+    const fd = fs.openSync(pidPath, 'wx');
+    fs.writeSync(fd, String(process.pid));
+    fs.closeSync(fd);
+  } catch {
+    // File already exists — check if process is alive
+    try {
+      const existingPid = fs.readFileSync(pidPath, 'utf8').trim();
+      if (existingPid) {
+        try {
+          process.kill(parseInt(existingPid, 10), 0);
+          console.error(`Another instance already running (PID ${existingPid}). Exiting.`);
+          process.exit(1);
+        } catch (e: unknown) {
+          if ((e as NodeJS.ErrnoException).code !== 'ESRCH') throw e;
+          // Stale PID
+          fs.writeFileSync(pidPath, String(process.pid), 'utf8');
+        }
+      } else {
+        fs.writeFileSync(pidPath, String(process.pid), 'utf8');
       }
+    } catch {
+      fs.writeFileSync(pidPath, String(process.pid), 'utf8');
     }
-  } catch {}
-  fs.writeFileSync(pidPath, String(process.pid), 'utf8');
+  }
 } catch {
   /* non-fatal */
 }
