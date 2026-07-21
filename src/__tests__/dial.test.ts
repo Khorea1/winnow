@@ -176,4 +176,24 @@ describe('isBlockedTarget', () => {
   it('allows unknown TLDs', () => {
     assert.equal(isBlockedTarget('myinternal.xyz'), false);
   });
+
+  it('blocks hex-encoded IPv4-mapped IPv6 (::ffff:7f00:1 = 127.0.0.1)', () => {
+    assert.ok(isBlockedTarget('::ffff:7f00:1'));
+  });
+
+  it('blocks hex-encoded CGNAT (::ffff:6440:0101 = 100.64.1.1)', () => {
+    assert.ok(isBlockedTarget('::ffff:6440:0101'));
+  });
+
+  it('allows public hex-encoded (::ffff:0808:0808 = 8.8.8.8)', () => {
+    assert.equal(isBlockedTarget('::ffff:0808:0808'), false);
+  });
+
+  it('blocks metadata.google.internal', () => {
+    assert.ok(isBlockedTarget('metadata.google.internal'));
+  });
+
+  it('blocks 169.254.169.254 (IMDS)', () => {
+    assert.ok(isBlockedTarget('169.254.169.254'));
+  });
 });

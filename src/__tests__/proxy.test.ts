@@ -131,6 +131,9 @@ function httpGetThroughProxy(proxyPort: number, targetHost: string, targetPort: 
     },
   );
   req.on('error', reject);
+  req.setTimeout(5000, () => {
+    req.destroy(new Error('request timeout'));
+  });
   req.end();
   return promise;
 }
@@ -146,14 +149,16 @@ function connectCheck(proxyPort: number, host: string, port: number): Promise<{ 
   let response = '';
   sock.on('data', (data: Buffer) => {
     response += data.toString();
-    const firstLine = response.split('\r\n')[0];
-    if (firstLine) {
+    const headEnd = response.indexOf('\r\n');
+    if (headEnd !== -1) {
       sock.destroy();
-      resolve({ status: firstLine });
+      resolve({ status: response.slice(0, headEnd) });
     }
   });
-  sock.on('error', () => resolve({ status: '403' }));
-  sock.on('end', () => resolve({ status: response.split('\r\n')[0] || '403' }));
+  sock.on('error', () => resolve({ status: 'error' }));
+  sock.on('end', () => {
+    if (!response) resolve({ status: 'closed' });
+  });
   return promise;
 }
 

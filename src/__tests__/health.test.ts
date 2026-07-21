@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import Database from 'better-sqlite3';
 import type { HealthEntry } from '../health/index.js';
-import { applyFailure, applySuccess, blankEntry, classifyError, transientBanMs } from '../health/index.js';
+import { applyFailure, applySuccess, blankEntry, classifyError, ensureStarEntry, HealthStore, transientBanMs } from '../health/index.js';
 
 function entry(e: Partial<HealthEntry> = {}): HealthEntry {
-  return { errors: 0, successes: 0, latency: 200, bannedUntil: 0, lastOk: 0, fatalErrors: 0, frozenUntil: 0, ...e };
+  return { ...blankEntry(), latency: 200, ...e };
 }
 
 const CONFIG = { maxFatalErrors: 3, fatalBanMs: 300000, banBaseMs: 30000, banMultiplier: 2, banMaxMs: 180000 };
@@ -206,6 +207,25 @@ describe('classifyError', () => {
   it('SOCKS reply 0x06 (TTL expired) -> transient', () => {
     assert.equal(classifyError({ socksReply: 0x06 }), 'transient');
   });
+  it('SOCKS reply 0x03 (network unreachable) -> fatal', () => {
+    const err = { socksReply: 0x03 };
+    assert.equal(classifyError(err), 'fatal');
+  });
+
+  it('SOCKS reply 0x05 (connection refused) -> fatal', () => {
+    const err = { socksReply: 0x05 };
+    assert.equal(classifyError(err), 'fatal');
+  });
+
+  it('SOCKS reply 0x07 (command not supported) -> fatal', () => {
+    const err = { socksReply: 0x07 };
+    assert.equal(classifyError(err), 'fatal');
+  });
+
+  it('SOCKS reply 0x08 (address type not supported) -> fatal', () => {
+    const err = { socksReply: 0x08 };
+    assert.equal(classifyError(err), 'fatal');
+  });
 
   it('timeout message -> transient', () => {
     assert.equal(classifyError({ message: 'timeout' }), 'transient');
@@ -260,5 +280,21 @@ describe('transientBanMs', () => {
   it('clamps exponent at 6 and respects banMaxMs', () => {
     // errors=7, exponent = min(6,6) = 6 -> raw = 30000 * 2^6 = 1920000, capped 999999
     assert.equal(transientBanMs(7, 30000, 2, 999999), 999999);
+  });
+});
+describe('ensureStarEntry', () => {
+  it('creates a * entry when one does not exist', () => {
+    const db = new Database(':memory:');
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS proxy_health (proxy TEXT NOT NULL, target TEXT NOT NULL DEFAULT '*', errors INTEGER NOT NULL DEFAULT 0, successes INTEGER NOT NULL DEFAULT 0, latency INTEGER NOT NULL DEFAULT 9999, banned_until INTEGER NOT NULL DEFAULT 0, last_ok INTEGER NOT NULL DEFAULT 0, fatal_errors INTEGER NOT NULL DEFAULT 0, frozen_until INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (proxy, target))`,
+    );
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS validation_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, started INTEGER NOT NULL, finished INTEGER, total INTEGER NOT NULL DEFAULT 0, passed INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0, exit_code INTEGER)`,
+    );
+    const health = new HealthStore(db, { pruneAfterMs: 0, fatalBanMs: 300000 });
+    const entry = ensureStarEntry(health, 'http://test:8080');
+    assert.ok(entry);
+    assert.equal(entry.latency, 9999);
+    health.stop();
   });
 });

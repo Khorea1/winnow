@@ -33,6 +33,27 @@ describe('DEFAULTS', () => {
     assert.equal(DEFAULTS.validationConnectTimeout, 4);
     assert.equal(DEFAULTS.validationPrune, true);
   });
+
+  it('DEFAULTS has all required fields', () => {
+    const requiredFields = [
+      'port',
+      'proxyFile',
+      'targets',
+      'retries',
+      'maxErrors',
+      'timeout',
+      'maxFatalErrors',
+      'fatalBanMs',
+      'banBaseMs',
+      'banMultiplier',
+      'banMaxMs',
+      'pruneAfterMs',
+      'upstreamIdleTimeout',
+    ];
+    for (const f of requiredFields) {
+      assert.ok(f in DEFAULTS, `DEFAULTS missing ${f}`);
+    }
+  });
 });
 
 describe('loadConfig', () => {
@@ -99,6 +120,21 @@ describe('loadConfig', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+  it('rejects validationBaseUrl pointing to blocked targets', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'winnow-test-'));
+    const configPath = path.join(dir, 'config.json');
+    const orig = process.env.WINNOW_CONFIG;
+    process.env.WINNOW_CONFIG = configPath;
+    try {
+      fs.writeFileSync(configPath, JSON.stringify({ validationBaseUrl: 'http://localhost:8080' }));
+      const cfg = loadConfig();
+      assert.equal(cfg.validationBaseUrl, DEFAULTS.validationBaseUrl);
+    } finally {
+      if (orig) process.env.WINNOW_CONFIG = orig;
+      else delete process.env.WINNOW_CONFIG;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   it('creates config file with defaults if missing', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'winnow-test-'));
@@ -109,6 +145,7 @@ describe('loadConfig', () => {
     try {
       assert.equal(fs.existsSync(configPath), false);
       const cfg = loadConfig();
+      assert.ok(fs.existsSync(path.dirname(configPath)));
       assert.ok(fs.existsSync(configPath));
       assert.equal(cfg.port, DEFAULTS.port);
       // proxyFile resolved to absolute path
@@ -138,15 +175,19 @@ describe('loadConfig', () => {
 });
 
 describe('updateConfig', () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'winnow-config-test-'));
+  let configDir: string;
+  let origWinnowConfig: string | undefined;
 
   before(() => {
-    process.env.WINNOW_CONFIG = path.join(tmpDir, 'config.json');
+    origWinnowConfig = process.env.WINNOW_CONFIG;
+    configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'winnow-config-test-'));
+    process.env.WINNOW_CONFIG = path.join(configDir, 'config.json');
   });
 
   after(() => {
-    delete process.env.WINNOW_CONFIG;
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    if (origWinnowConfig) process.env.WINNOW_CONFIG = origWinnowConfig;
+    else delete process.env.WINNOW_CONFIG;
+    fs.rmSync(configDir, { recursive: true, force: true });
   });
 
   it('updates allowed keys', () => {

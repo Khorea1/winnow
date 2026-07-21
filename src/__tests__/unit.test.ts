@@ -60,12 +60,15 @@ describe('parseLine', () => {
 // ── computeScore ──────────────────────────────────────────
 
 describe('computeScore', () => {
+  it('latency=0 → 0', () => {
+    assert.equal(HealthStore.computeScore(health({ latency: 0 })), 0);
+  });
   it('errors=0 successes=0 latency=200 → 200', () => {
     assert.equal(HealthStore.computeScore(health({})), 200);
   });
 
-  it('banned (bannedUntil > now) → 200 (no longer returns Infinity)', () => {
-    assert.equal(HealthStore.computeScore(health({ bannedUntil: 200 }), 100), 200);
+  it('banned (bannedUntil > now) → Infinity', () => {
+    assert.equal(HealthStore.computeScore(health({ bannedUntil: 200 }), 100), Infinity);
   });
 
   it('frozen (frozenUntil > now) → Infinity', () => {

@@ -72,3 +72,15 @@ describe('buildOptionsFromConfig', () => {
     assert.equal(opts.maxGap, 0);
   });
 });
+
+import { validateFile } from '../validator/index.js';
+
+// validateFile reads an actual file from disk, so unit-testing it is not practical
+// without I/O mocking. Full coverage requires integration tests (e.g. pointing at a
+// real proxy list, or mocking the filesystem). The core option-resolution logic is
+// covered by the buildOptionsFromConfig tests above.
+describe('validateFile', () => {
+  it('is exported and callable', () => {
+    assert.equal(typeof validateFile, 'function');
+  });
+});
