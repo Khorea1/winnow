@@ -46,9 +46,13 @@ export class EventLog {
     }
     // Notify listeners — failures must never crash the app
     for (const fn of [...this.listeners]) {
-      try {
-        fn(e);
-      } catch {}
+      queueMicrotask(() => {
+        try {
+          fn(e);
+        } catch {
+          /* listener errors never crash the app */
+        }
+      });
     }
     return e;
   }

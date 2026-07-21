@@ -53,14 +53,25 @@ export function createLogger(name: string): Logger {
       jsonError = e instanceof Error ? e.message : String(e);
     }
     if (jsonError) {
-      jsonStr = JSON.stringify({
-        ...entry,
-        time: entry.time,
-        level: entry.level,
-        name: entry.name,
-        msg: entry.msg,
-        _jsonError: jsonError,
-      });
+      try {
+        jsonStr = JSON.stringify({
+          time: entry.time,
+          level: entry.level,
+          name: entry.name,
+          msg: entry.msg,
+          _jsonError: jsonError,
+          _circular: true,
+        });
+      } catch {
+        jsonStr = JSON.stringify({
+          time: entry.time || new Date().toISOString(),
+          level: entry.level || 'ERROR',
+          name: entry.name || 'logger',
+          msg: entry.msg || 'logging error',
+          _jsonError: jsonError,
+          _circular: true,
+        });
+      }
     }
     try {
       process.stderr.write(`${jsonStr}\n`);
