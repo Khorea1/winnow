@@ -36,11 +36,14 @@ const STRIPPED_REQUEST_HEADERS: Record<string, true> = {
 // Maximum acceptable size for upstream response headers (prevents unbounded
 // memory growth if the upstream sends data without a \r\n\r\n terminator).
 const MAX_RESPONSE_HEADER_BYTES = 32768;
+let concurrentConnections = 0;
+const MAX_CONCURRENT_CONNECTIONS = 1000;
 
 // ── Upstream timeout helpers ──────────────────────────────────────────────
 // TTFB + idle timeout for single-socket upstream or bi-directional CONNECT.
 function startSocketTimeout(sockets: net.Socket[], ttfbMs: number, idleMs: number, onTimeout: () => void): () => void {
   let ttfbTimer: NodeJS.Timeout | null = setTimeout(() => {
+    if (ttfbTimer === null) return;
     const t = idleTimer;
     ttfbTimer = null;
     idleTimer = null;
@@ -102,6 +105,11 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
       clientSock.end('HTTP/1.1 403 Forbidden\r\n\r\n');
       return;
     }
+    if (concurrentConnections >= MAX_CONCURRENT_CONNECTIONS) {
+      clientSock.end('HTTP/1.1 503 Service Unavailable\r\n\r\n');
+      return;
+    }
+    concurrentConnections++;
     const targetKey = `${tHost}:${tPort}`;
     const config = ctx.config.current;
     const proxies = ctx.getProxies();
@@ -221,6 +229,7 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
       // socket for a clean shutdown on the client side.
       upSock.on('close', () => {
         cancelTimeout?.();
+        if (failed) return;
         const elapsed = Date.now() - start;
         if (elapsed < 500 && bytesDown === 0 && bytesUp < 100) {
           EventLog.safePush(el, { type: 'connect', proxy: upstream.raw, target: targetKey, status: 'failure', error: 'early close', errorClass: 'transient' });
@@ -257,6 +266,8 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
         clientSock.write('HTTP/1.1 502 Bad Gateway\r\n\r\n');
       } catch {}
       clientSock.end();
+    } finally {
+      concurrentConnections--;
     }
   });
 
@@ -267,6 +278,12 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
     let cancelTimeout: (() => void) | undefined;
     const el = ctx.eventLog;
     let targetKey = '';
+    if (concurrentConnections >= MAX_CONCURRENT_CONNECTIONS) {
+      res.writeHead(503, { 'Content-Type': 'text/plain' });
+      res.end('Service Unavailable');
+      return;
+    }
+    concurrentConnections++;
     try {
       let targetUrl: URL;
       try {
@@ -293,7 +310,7 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
       targetKey = `${tHost}:${tPort}`;
       const config = ctx.config.current;
       const proxies = ctx.getProxies();
-      const { sock: upSock, upstream, latency: dialLatency } = await tryWithRetry(proxies, ctx.health, config, tHost, tPort, el, reqId);
+      const { sock: upSock, head: upHead, upstream, latency: dialLatency } = await tryWithRetry(proxies, ctx.health, config, tHost, tPort, el, reqId);
 
       logger.info({ reqId, proxy: upstream.raw, target: targetKey, latency: dialLatency }, 'http upstream acquired');
       EventLog.safePush(el, { type: 'http', proxy: upstream.raw, target: targetKey, status: 'success', latency: dialLatency });
@@ -318,14 +335,20 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
           errorClass: classifyError(err),
         });
       };
+      if (upHead?.length) {
+        markHttpFailure(new Error('upstream sent data before response'));
+        upSock.destroy();
+        return;
+      }
 
       // Send request to upstream — preserve original header casing via rawHeaders
       const pathAndQuery = targetUrl.pathname + targetUrl.search;
       let reqHeaderLines = '';
       for (let i = 0; i < req.rawHeaders.length; i += 2) {
-        const k = req.rawHeaders[i];
+        const k = req.rawHeaders[i].replace(/[\r\n]/g, '').trim();
         if (k.toLowerCase() in STRIPPED_REQUEST_HEADERS) continue;
-        reqHeaderLines += `${k}: ${req.rawHeaders[i + 1]}\r\n`;
+        const v = req.rawHeaders[i + 1].replace(/[\r\n]/g, '').trim();
+        reqHeaderLines += `${k}: ${v}\r\n`;
       }
       // Use targetUrl.host to include port when non-default (e.g. Host: example.com:8080)
       const reqLine = `${req.method} ${pathAndQuery} HTTP/1.1\r\nHost: ${targetUrl.host}\r\n${reqHeaderLines}Connection: keep-alive\r\n\r\n`;
@@ -532,6 +555,8 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
         res.writeHead(502, { 'Content-Type': 'text/plain' });
         res.end('Bad Gateway');
       } catch {}
+    } finally {
+      concurrentConnections--;
     }
   });
   return server;

@@ -38,7 +38,8 @@ export async function tryWithRetry(
   eventLog?: EventLog,
   reqId?: string,
 ): Promise<{ sock: net.Socket; head: Buffer; upstream: ParsedProxy; latency: number }> {
-  const targetKey = `${tHost}:${tPort}`;
+  const hostKey = tHost.includes(':') ? `[${tHost}]` : tHost;
+  const targetKey = `${hostKey}:${tPort}`;
   const isTargetTracked = config.targets.includes(targetKey);
   const candidates = pickMany(proxies, health, config.retries, isTargetTracked ? targetKey : undefined, config.maxErrors);
   if (!candidates.length) {

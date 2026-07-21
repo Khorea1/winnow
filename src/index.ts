@@ -91,7 +91,12 @@ const logger = createLogger('main');
 
 // Load proxies
 function load() {
-  if (_hcRunning || shuttingDown) return;
+  if (shuttingDown) return;
+  if (_hcRunning) {
+    _pendingReload = true;
+    return;
+  }
+  _pendingReload = false;
   try {
     const list = fs
       .readFileSync(config.proxyFile, 'utf8')
@@ -199,14 +204,11 @@ _hcInterval = setInterval(async () => {
 // Start server — wrap in error handling for EADDRINUSE etc.
 server.on('error', (err: NodeJS.ErrnoException) => {
   if (err.code === 'EADDRINUSE') {
-    logger.error({ port: config.port }, 'port already in use');
+    logger.error({ port: config.port }, 'address already in use');
   } else {
     logger.error({ error: err.message }, 'server error');
   }
-  shutdown('server error');
-  if (err.code === 'EADDRINUSE' || err.code === 'EACCES') {
-    process.exit(1);
-  }
+  shutdown('server_error');
 });
 server.listen(config.port, '0.0.0.0', () => {
   logger.info({ port: config.port, file: config.proxyFile, retries: config.retries, timeout: config.timeout, targets: config.targets }, 'server started');
