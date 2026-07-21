@@ -285,6 +285,12 @@ export function registerDashboard(
         respondJson(res, { events: eventLog?.recent(limit) || [] });
         return;
       }
+
+      if (pathname === '/api/events' && req.method === 'GET') {
+        const limit = Math.min(parseInt(urlObj.searchParams.get('limit') || '50', 10), 2000);
+        respondJson(res, { events: eventLog?.recent(limit) || [] });
+        return;
+      }
       if (pathname === '/api/config' && req.method === 'POST') {
         const body = await readBody(req, res);
         if (body === null) return;
@@ -308,7 +314,7 @@ export function registerDashboard(
       // NOTE: proxy key may contain credentials — prefer X-Proxy-Key header to
       // avoid URL logging by reverse proxies.
       if (pathname === '/api/proxy' && req.method === 'DELETE') {
-        const key = (typeof req.headers['x-proxy-key'] === 'string' ? req.headers['x-proxy-key'] : null) as string | null;
+        const key = (typeof req.headers['x-proxy-key'] === 'string' ? req.headers['x-proxy-key'] : urlObj.searchParams.get('key')) as string | null;
         if (!key) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Missing key parameter' }));

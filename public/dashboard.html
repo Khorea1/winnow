@@ -482,13 +482,11 @@ th[aria-sort="descending"] .sort-arrow::before { content: '\2193'; }
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script>
-(function(){
+(()=> {
 'use strict';
 
 function esc(s){
-  return String(s).replace(/[&<>"']/g, function(ch){
-    return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[ch];
-  });
+  return String(s).replace(/[&<>"']/g, (ch)=> ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[ch]));
 }
 
 /* ==================== i18n ==================== */
@@ -837,15 +835,15 @@ function locale(){ return lang === 'pt' ? 'pt-BR' : 'en-US'; }
 function applyStaticI18n(){
   document.documentElement.lang = lang === 'pt' ? 'pt-BR' : 'en';
   document.title = t('pageTitle');
-  document.querySelectorAll('[data-i18n]').forEach(function(el){ el.textContent = t(el.dataset.i18n); });
-  document.querySelectorAll('[data-i18n-title]').forEach(function(el){ el.title = t(el.dataset.i18nTitle); });
-  document.querySelectorAll('[data-i18n-placeholder]').forEach(function(el){ el.placeholder = t(el.dataset.i18nPlaceholder); });
-  document.querySelectorAll('[data-i18n-aria]').forEach(function(el){ el.setAttribute('aria-label', t(el.dataset.i18nAria)); });
+  document.querySelectorAll('[data-i18n]').forEach((el)=> { el.textContent = t(el.dataset.i18n); });
+  document.querySelectorAll('[data-i18n-title]').forEach((el)=> { el.title = t(el.dataset.i18nTitle); });
+  document.querySelectorAll('[data-i18n-placeholder]').forEach((el)=> { el.placeholder = t(el.dataset.i18nPlaceholder); });
+  document.querySelectorAll('[data-i18n-aria]').forEach((el)=> { el.setAttribute('aria-label', t(el.dataset.i18nAria)); });
   const vlog = document.getElementById('validate-log');
   if (vlog) vlog.dataset.emptyMsg = t('validateLogEmpty');
   const efeed = document.getElementById('event-feed');
   if (efeed) efeed.dataset.emptyMsg = t('eventsWaiting');
-  document.querySelectorAll('.lang-btn').forEach(function(btn){
+  document.querySelectorAll('.lang-btn').forEach((btn)=> {
     btn.classList.toggle('active', btn.dataset.lang === lang);
   });
   // Sidebar toggle reflects whichever state it's currently in
@@ -869,24 +867,24 @@ function setLang(next){
   renderProxyTable();
   renderSpectrum();
 }
-document.querySelectorAll('.lang-btn').forEach(function(btn){
-  btn.addEventListener('click', function(){ setLang(btn.dataset.lang); });
+document.querySelectorAll('.lang-btn').forEach((btn)=> {
+  btn.addEventListener('click', ()=> { setLang(btn.dataset.lang); });
 });
 
 let proxyData = [];
 let proxyDataFiltered = [];
-let latencyHistory = [];
+const latencyHistory = [];
 const MAX_HISTORY = 60;
 let sortKey = 'score', sortDir = 'asc', filterTerm = '';
 let isValidating = false;
 let CFG = {};
-let statusFilter = new Set();
+const statusFilter = new Set();
 let valCounters = { total: 0, ok: 0, fail: 0 };
 let refreshScheduled = false;
 /* ---------- sidebar toggle ---------- */
 const layout = document.getElementById('layout');
 const sidebarToggle = document.getElementById('sidebar-toggle');
-if (sidebarToggle) sidebarToggle.addEventListener('click', function(){
+if (sidebarToggle) sidebarToggle.addEventListener('click', ()=> {
   const hidden = layout.classList.toggle('sidebar-hidden');
   sidebarToggle.classList.toggle('active', hidden);
   sidebarToggle.querySelector('.icon').textContent = hidden ? '◀' : '⚙';
@@ -896,7 +894,7 @@ if (sidebarToggle) sidebarToggle.addEventListener('click', function(){
   localStorage.setItem('rotator:sidebar', hidden ? 'hidden' : 'visible');
 });
 // Restore sidebar state
-(function(){
+(()=> {
   const state = localStorage.getItem('rotator:sidebar');
   if (state === 'hidden') {
     layout.classList.add('sidebar-hidden');
@@ -912,7 +910,7 @@ function toast(msg, ms){
   el.textContent = msg;
   el.classList.add('show');
   clearTimeout(el._t);
-  el._t = setTimeout(function(){ el.classList.remove('show'); }, ms || 3000);
+  el._t = setTimeout(()=> { el.classList.remove('show'); }, ms || 3000);
 }
 
 function fmtClock(){
@@ -941,20 +939,20 @@ function log(text, cls){
   while (container.children.length > 300) container.removeChild(container.firstChild);
 }
 
-document.getElementById('btn-clear-logs').addEventListener('click', function(){
+document.getElementById('btn-clear-logs').addEventListener('click', ()=> {
   document.getElementById('log').innerHTML = '<div class="log-empty">' + esc(t('logCleared')) + '</div>';
 });
-document.getElementById('proxy-filter').addEventListener('input', function(e){
+document.getElementById('proxy-filter').addEventListener('input', (e)=> {
   filterTerm = e.target.value.toLowerCase().trim();
   renderProxyTable();
 });
-document.getElementById('btn-copy-all').addEventListener('click', function(){
-  const txt = proxyDataFiltered.map(function(p){ return p.proxy; }).join('\n');
-  navigator.clipboard.writeText(txt).then(function(){
+document.getElementById('btn-copy-all').addEventListener('click', ()=> {
+  const txt = proxyDataFiltered.map((p)=> p.proxy).join('\n');
+  navigator.clipboard.writeText(txt).then(()=> {
     toast(t('copiedCount', { n: proxyDataFiltered.length }));
-  }).catch(function(){ toast(t('copyFail')); });
+  }).catch(()=> { toast(t('copyFail')); });
 });
-window.addEventListener('keydown', function(e){
+window.addEventListener('keydown', (e)=> {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
     e.preventDefault();
     document.getElementById('proxy-filter').focus();
@@ -963,8 +961,8 @@ window.addEventListener('keydown', function(e){
 
 
 /* ---------- status filter chips ---------- */
-document.querySelectorAll('.filter-chip').forEach(function(chip){
-  chip.addEventListener('click', function(){
+document.querySelectorAll('.filter-chip').forEach((chip)=> {
+  chip.addEventListener('click', ()=> {
     const status = chip.dataset.status;
     if (statusFilter.has(status)) statusFilter['delete'](status);
     else statusFilter.add(status);
@@ -975,7 +973,7 @@ document.querySelectorAll('.filter-chip').forEach(function(chip){
 async function fetchJSON(url, opts){
   const r = await fetch(url, opts);
   if (!r.ok) {
-    const txt = await r.text().catch(function(){ return r.statusText; });
+    const txt = await r.text().catch(()=> r.statusText);
     let msg = txt;
     try { const j = JSON.parse(txt); msg = j.error || txt; } catch {}
     throw new Error(msg || r.statusText);
@@ -1032,7 +1030,7 @@ async function refreshStats(){
     document.getElementById('stat-total-sub').textContent =
       (d.total ?? 0) > proxyData.length ? t('sampleOf', { n: proxyData.length, total: d.total }) : t('allVisible');
     const now = Date.now();
-    const bannedInSample = proxyData.filter(function(p){ return p.banned || now < p.bannedUntil; }).length;
+    const bannedInSample = proxyData.filter((p)=> p.banned || now < p.bannedUntil).length;
     document.getElementById('stat-sample-banned').textContent = bannedInSample;
     document.getElementById('stat-alive').textContent = d.alive ?? 0;
     document.getElementById('stat-retries').textContent = d.retries ?? '—';
@@ -1044,11 +1042,11 @@ async function refreshStats(){
       ? t('sampleShowing', { n: proxyData.length, total: d.total })
       : '';
 
-    const withLatency = proxyData.filter(function(p){ return p.latency !== 9999; });
+    const withLatency = proxyData.filter((p)=> p.latency !== 9999);
     const avgLat = withLatency.length
-      ? Math.round(withLatency.reduce(function(s,p){ return s + p.latency; }, 0) / withLatency.length)
+      ? Math.round(withLatency.reduce((s,p)=> s + p.latency, 0) / withLatency.length)
       : 0;
-    const totalErrors = proxyData.reduce(function(s,p){ return s + p.errors; }, 0);
+    const totalErrors = proxyData.reduce((s,p)=> s + p.errors, 0);
     latencyHistory.push({ latency: avgLat, errors: totalErrors });
     if (latencyHistory.length > MAX_HISTORY) latencyHistory.shift();
 
@@ -1061,7 +1059,7 @@ async function refreshStats(){
 }
 
 /* ---------- smooth ban countdown ---------- */
-setInterval(function(){
+setInterval(()=> {
   var rows = document.querySelectorAll('#proxy-table tr[data-proxy-key]');
   var now = Date.now();
   for (var i = 0; i < rows.length; i++) {
@@ -1076,14 +1074,14 @@ setInterval(function(){
 
 function getSortedFiltered(){
   let list = proxyData.slice();
-  if (filterTerm) list = list.filter(function(p){ return p.proxy.toLowerCase().includes(filterTerm); });
+  if (filterTerm) list = list.filter((p)=> p.proxy.toLowerCase().includes(filterTerm));
   // Apply status filter — empty set means show all
   if (statusFilter.size > 0) {
     const now = Date.now();
-    list = list.filter(function(p){ return statusFilter.has(classify(p, now)); });
+    list = list.filter((p)=> statusFilter.has(classify(p, now)));
   }
   const now = Date.now();
-  list.sort(function(a, b){
+  list.sort((a, b)=> {
     let va, vb;
     switch (sortKey) {
       case 'proxy': va = a.proxy; vb = b.proxy; break;
@@ -1126,20 +1124,20 @@ function buildRow(p, now){
   copyBtn.textContent = '⧉';
   copyBtn.title = t('copyBtnTitle');
   copyBtn.setAttribute('aria-label', t('copyBtnAria', { proxy: p.proxy }));
-  copyBtn.addEventListener('click', function(){
-    navigator.clipboard.writeText(p.proxy).then(function(){ toast(t('copiedGeneric')); }).catch(function(){});
+  copyBtn.addEventListener('click', ()=> {
+    navigator.clipboard.writeText(p.proxy).then(()=> { toast(t('copiedGeneric')); }).catch(()=> {});
   });
   const delBtn = document.createElement('button');
   delBtn.className = 'icon-btn danger';
   delBtn.textContent = '✕';
   delBtn.title = t('delBtnTitle');
   delBtn.setAttribute('aria-label', t('delBtnAria', { proxy: p.proxy }));
-  delBtn.addEventListener('click', async function(){
+  delBtn.addEventListener('click', async ()=> {
     if (!confirm(t('delConfirm', { proxy: p.proxy }))) return;
     delBtn.disabled = true;
     try {
       await fetchJSON('/api/proxy?key=' + encodeURIComponent(p.proxy), { method: 'DELETE' });
-      proxyData = proxyData.filter(function(x){ return x.proxy !== p.proxy; });
+      proxyData = proxyData.filter((x)=> x.proxy !== p.proxy);
       renderProxyTable();
       renderSpectrum();
       toast(t('delSuccessToast'));
@@ -1200,18 +1198,18 @@ function renderProxyTable(){
   } else {
     var now = Date.now();
     var frag = document.createDocumentFragment();
-    filtered.forEach(function(p){ frag.appendChild(buildRow(p, now)); });
+    filtered.forEach((p)=> { frag.appendChild(buildRow(p, now)); });
     tbody.appendChild(frag);
   }
 
   // Update filter chip counts
   var statusCounts = { ok: 0, warn: 0, err: 0, ban: 0 };
   var now2 = Date.now();
-  proxyData.forEach(function(p){
+  proxyData.forEach((p)=> {
     var s = classify(p, now2);
     if (statusCounts[s] !== undefined) statusCounts[s]++;
   });
-  document.querySelectorAll('.filter-chip .count').forEach(function(el){
+  document.querySelectorAll('.filter-chip .count').forEach((el)=> {
     el.textContent = statusCounts[el.dataset.status] || 0;
   });
 
@@ -1221,20 +1219,20 @@ function renderProxyTable(){
 
 // Sortable column headers
 function updateSortIndicators(){
-  document.querySelectorAll('th[data-sort]').forEach(function(th){
+  document.querySelectorAll('th[data-sort]').forEach((th)=> {
     if (th.dataset.sort === sortKey) th.setAttribute('aria-sort', sortDir === 'asc' ? 'ascending' : 'descending');
     else th.setAttribute('aria-sort', 'none');
   });
 }
-document.querySelectorAll('th[data-sort]').forEach(function(th){
-  th.addEventListener('click', function(){
+document.querySelectorAll('th[data-sort]').forEach((th)=> {
+  th.addEventListener('click', ()=> {
     var key = th.dataset.sort;
     if (sortKey === key) sortDir = sortDir === 'asc' ? 'desc' : 'asc';
     else { sortKey = key; sortDir = 'asc'; }
     updateSortIndicators();
     renderProxyTable();
   });
-  th.addEventListener('keydown', function(e){
+  th.addEventListener('keydown', (e)=> {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); th.click(); }
   });
 });
@@ -1248,12 +1246,12 @@ function renderSpectrum(){
     return;
   }
   const now = Date.now();
-  const ordered = proxyData.slice().sort(function(a,b){ return a.score - b.score; });
-  const finiteScores = ordered.map(function(p){ return p.score; }).filter(function(s){ return s !== Infinity; });
+  const ordered = proxyData.slice().sort((a,b)=> a.score - b.score);
+  const finiteScores = ordered.map((p)=> p.score).filter((s)=> s !== Infinity);
   const maxScore = finiteScores.length ? Math.max.apply(null, finiteScores) : 1;
   el.innerHTML = '';
   const frag = document.createDocumentFragment();
-  ordered.forEach(function(p){
+  ordered.forEach((p)=> {
     const status = classify(p, now);
     const bar = document.createElement('div');
     bar.className = 'bar ' + status;
@@ -1273,12 +1271,12 @@ function renderTrend(){
   if (!latencyHistory.length) { svg.innerHTML = ''; return; }
   const w = 600, h = 64, pad = 4;
   const n = latencyHistory.length;
-  const lat = latencyHistory.map(function(d){ return d.latency; });
-  const err = latencyHistory.map(function(d){ return d.errors; });
+  const lat = latencyHistory.map((d)=> d.latency);
+  const err = latencyHistory.map((d)=> d.errors);
   const maxLat = Math.max(1, Math.max.apply(null, lat));
   const maxErr = Math.max(1, Math.max.apply(null, err));
   function pathFor(values, max){
-    return values.map(function(v, i){
+    return values.map((v, i)=> {
       const x = n > 1 ? pad + (i / (n - 1)) * (w - pad * 2) : pad;
       const y = h - pad - (v / max) * (h - pad * 2);
       return (i === 0 ? 'M' : 'L') + x.toFixed(1) + ' ' + y.toFixed(1);
@@ -1293,7 +1291,7 @@ function renderTrend(){
 
 /* ---------- SSE ---------- */
 function addSSEListeners(ev){
-  ev.addEventListener('validation:progress', function(e){
+  ev.addEventListener('validation:progress', (e)=> {
     try {
       const d = JSON.parse(e.data);
       const el = document.getElementById('validate-log');
@@ -1320,10 +1318,10 @@ function addSSEListeners(ev){
       while (el.children.length > 500) el.removeChild(el.firstChild);
     } catch {}
   });
-  ev.addEventListener('validation:stopping', function(){
+  ev.addEventListener('validation:stopping', ()=> {
     log(t('stoppingValidationLog'), 'info');
   });
-  ev.addEventListener('validation:complete', function(e){
+  ev.addEventListener('validation:complete', (e)=> {
     try {
       const d = JSON.parse(e.data);
       stopValidationUI();
@@ -1339,21 +1337,21 @@ function addSSEListeners(ev){
 function connectSSE(){
   const ev = new EventSource('/events');
   const dot = document.getElementById('sse-dot'), txt = document.getElementById('sse-text');
-  ev.addEventListener('connected', function(){
+  ev.addEventListener('connected', ()=> {
     log(t('connectedLog'));
     if (dot) dot.className = 'dot live';
     if (txt) txt.textContent = t('liveActive');
     syncValidationStatus();
   });
-  ev.addEventListener('health:update', function(){
+  ev.addEventListener('health:update', ()=> {
     if (!refreshScheduled) {
       refreshScheduled = true;
-      setTimeout(function(){ refreshScheduled = false; refreshStats(); }, 600);
+      setTimeout(()=> { refreshScheduled = false; refreshStats(); }, 600);
     }
   });
   addSSEListeners(ev);
   addEventFeedSSE(ev);
-  ev.onerror = function(){
+  ev.onerror = ()=> {
     ev.close();  // Close the old EventSource first
     log(t('connLostLog'), 'fail');
     if (dot) dot.className = 'dot down';
@@ -1369,7 +1367,7 @@ let lastRenderedEventId = 0;
 // Fetch initial events
 async function loadInitialEvents() {
   try {
-    const res = await fetch('/api/events');
+    const res = await fetch('/api/events/log');
     const events = await res.json();
     for (const e of events) {
       renderEventLine(e);
@@ -1461,7 +1459,7 @@ function renderEventLine(e) {
 
 // SSE listener
 function addEventFeedSSE(ev) {
-  ev.addEventListener('proxy:event', function(e) {
+  ev.addEventListener('proxy:event', (e) => {
     try {
       const d = JSON.parse(e.data);
       renderEventLine(d);
@@ -1470,7 +1468,7 @@ function addEventFeedSSE(ev) {
 }
 
 // Filter change
-document.getElementById('evt-filter')?.addEventListener('change', function(e) {
+document.getElementById('evt-filter')?.addEventListener('change', (e) => {
   eventFilter = e.target.value;
   // Re-render all visible events (just clear and re-fetch)
   document.getElementById('event-feed').innerHTML = '';
@@ -1478,7 +1476,7 @@ document.getElementById('evt-filter')?.addEventListener('change', function(e) {
 });
 
 // Clear button
-document.getElementById('btn-clear-events')?.addEventListener('click', function() {
+document.getElementById('btn-clear-events')?.addEventListener('click', () => {
   document.getElementById('event-feed').innerHTML = '<div class="log-empty">' + esc(t('eventsCleared')) + '</div>';
   eventFilter = '';
   const sel = document.getElementById('evt-filter');
@@ -1534,7 +1532,7 @@ function updateModeDesc(){
 }
 document.getElementById('cfg-val-mode').addEventListener('change', updateModeDesc);
 
-document.getElementById('btn-validate').addEventListener('click', async function(){
+document.getElementById('btn-validate').addEventListener('click', async ()=> {
   startValidationUI();
   try {
     const custom = {
@@ -1558,7 +1556,7 @@ document.getElementById('btn-validate').addEventListener('click', async function
   }
 });
 
-document.getElementById('btn-stop-validate').addEventListener('click', async function(){
+document.getElementById('btn-stop-validate').addEventListener('click', async ()=> {
   const btn = document.getElementById('btn-stop-validate');
   btn.disabled = true; btn.textContent = t('stopBtnStopping');
   try {
@@ -1569,16 +1567,16 @@ document.getElementById('btn-stop-validate').addEventListener('click', async fun
     log(t('stopErr', { msg: e.message }), 'fail');
     toast(t('stopErrToast'));
   }
-  setTimeout(function(){ btn.disabled = false; btn.textContent = t('stopBtn'); }, 2000);
+  setTimeout(()=> { btn.disabled = false; btn.textContent = t('stopBtn'); }, 2000);
 });
 
-document.getElementById('cfg-save').addEventListener('click', async function(){
+document.getElementById('cfg-save').addEventListener('click', async ()=> {
   const btn = document.getElementById('cfg-save');
   btn.disabled = true;
   const msg = document.getElementById('cfg-msg');
   msg.textContent = t('savingConfig'); msg.style.color = 'var(--ink-faint)';
   try {
-    const targets = document.getElementById('cfg-targets').value.split('\n').map(function(s){ return s.trim(); }).filter(Boolean);
+    const targets = document.getElementById('cfg-targets').value.split('\n').map((s)=> s.trim()).filter(Boolean);
     const body = {
       retries: parseInt(document.getElementById('cfg-retries').value, 10),
       maxErrors: parseInt(document.getElementById('cfg-maxErrors').value, 10),
@@ -1634,7 +1632,7 @@ async function loadConfig(){
   }
 }
 
-(async function(){
+(async ()=> {
   try { await loadConfig(); } catch {}
   try { await refreshStats(); } catch {}
   setInterval(refreshStats, 5000);
