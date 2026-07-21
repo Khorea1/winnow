@@ -50,7 +50,7 @@ export async function httpCheck(
         {
           socket: sock,
           servername: tHost,
-          rejectUnauthorized: opts.strictTLS,
+          rejectUnauthorized: opts.strictTLS ? true : !opts.insecure,
         } satisfies tls.ConnectionOptions,
         () => {
           if (tlsDone) return;

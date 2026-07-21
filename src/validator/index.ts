@@ -29,9 +29,11 @@ interface ValidationConfigFragment {
 }
 
 export function buildOptionsFromConfig(config: ValidationConfigFragment, overrides: Partial<ValidatorOptions> = {}): ValidatorOptions {
+  const validModes = ['quick', 'standard', 'strict', 'stream', 'tcp-only'] as const;
+  type ValidMode = (typeof validModes)[number];
   return {
     threads: overrides.threads ?? config.validationThreads ?? 20,
-    mode: overrides.mode ?? config.validationMode ?? 'quick',
+    mode: overrides.mode && validModes.includes(overrides.mode as ValidMode) ? (overrides.mode as ValidMode) : (config.validationMode ?? 'quick'),
     baseUrl: overrides.baseUrl ?? config.validationBaseUrl ?? 'http://httpbin.org',
     connectTimeout: overrides.connectTimeout ?? config.validationConnectTimeout ?? 4,
     maxLatency: overrides.maxLatency ?? config.validationMaxLatency ?? 7000,
@@ -48,6 +50,8 @@ export function buildOptionsFromConfig(config: ValidationConfigFragment, overrid
 
 export async function validateFile(filePath: string, opts: ValidatorOptions, onProgress?: ProgressCallback, abortSignal?: AbortSignal) {
   if (!fs.existsSync(filePath)) throw new Error(`File not found: ${filePath}`);
+  const stat = fs.statSync(filePath);
+  if (stat.size > 100 * 1024 * 1024) throw new Error('File too large');
   const content = fs.readFileSync(filePath, 'utf8');
   const proxies = content
     .split('\n')

@@ -14,13 +14,20 @@ function fail(proxy: string, stage: string, error: string, extra?: Partial<Proxy
 // Helper: race a promise against an abort signal
 function withAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return promise;
-  return Promise.race([
-    promise,
-    new Promise<T>((_, reject) => {
-      if (signal.aborted) reject(new Error('aborted'));
-      else signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
-    }),
-  ]);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new Error('aborted'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (val) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(val);
+      },
+      (err) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(err);
+      },
+    );
+  });
 }
 
 export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptions, abortSignal?: AbortSignal): Promise<ProxyResult> {
@@ -93,7 +100,7 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
       const tlsRes = await withAbort(
         tlsCheck(trimmed, tlsHost, tlsPort, {
           connectTimeout: opts.connectTimeout,
-          insecure: false,
+          insecure: opts.insecure,
           strictTLS: true,
         }),
         abortSignal,
@@ -194,13 +201,14 @@ export async function runValidation(
         if (abortSignal?.aborted) break;
 
         try {
-          const res = await validateSingleProxy(proxy, opts, abortSignal);
+          let res = await validateSingleProxy(proxy, opts, abortSignal);
+          const sanitizedProxy = res.proxy.replace(/\/\/.*@/, '//***:***@');
+          res = { ...res, proxy: sanitizedProxy };
           results.push(res);
           if (res.valid) valid.push(res.proxy);
-          else invalid.push({ proxy: res.proxy, reason: res.error || 'error' });
+          else invalid.push({ proxy: sanitizedProxy, reason: res.error || 'error' });
           done++;
           onProgress?.(res, { total, done, valid: valid.length, invalid: invalid.length });
-          const sanitizedProxy = res.proxy.replace(/\/\/.*@/, '//***:***@');
           logger.debug(
             {
               proxy: sanitizedProxy,

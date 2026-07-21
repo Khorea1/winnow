@@ -1,6 +1,7 @@
+import type { RotatorConfig } from '../config/index.js';
 export interface ValidatorOptions {
   threads: number;
-  mode: 'quick' | 'standard' | 'strict' | 'stream' | 'tcp-only';
+  mode: RotatorConfig['validationMode'];
   baseUrl: string;
   connectTimeout: number;
   maxLatency: number;

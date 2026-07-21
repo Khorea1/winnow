@@ -58,7 +58,13 @@ export async function streamingCheck(
       const now = Date.now();
       if (firstByte === 0) firstByte = now;
       if (headersEnd === -1) {
-        headerBuf += d.toString();
+        headerBuf += d.toString('utf8', 0, Math.min(d.length, 65536 - headerBuf.length));
+        if (headerBuf.length > 65536) {
+          done = true;
+          clearTimeout(timer);
+          reject(new Error('response headers too large'));
+          return;
+        }
         const idx = headerBuf.indexOf('\r\n\r\n');
         if (idx !== -1) {
           const firstLine = headerBuf.slice(0, idx).split('\r\n')[0] || '';
@@ -98,7 +104,8 @@ export async function streamingCheck(
       clearTimeout(timer);
       // If headers never completed, the connection closed before we got a full response
       if (headersEnd === -1) {
-        // Connection closed before headers complete — incomplete response
+        reject(new Error('no HTTP response headers received'));
+        return;
       }
       const total = Date.now() - start;
       const ttfb = firstByte ? firstByte - start : total;

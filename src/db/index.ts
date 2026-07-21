@@ -39,15 +39,23 @@ export type HealthRow = {
 export function initDb(dbPath: string): DatabaseType {
   const db = new Database(dbPath);
 
-  // Create tables (new databases only — IF NOT EXISTS means existing ones are untouched)
-  db.exec(SCHEMA);
+  db.pragma('journal_mode = WAL');
+
+  // Schema versioning
+  const userVersion = db.pragma('user_version', { simple: true }) as number;
+  if (userVersion < 1) {
+    db.exec(SCHEMA);
+    db.pragma('user_version = 1');
+  } else {
+    db.exec(SCHEMA); // still run CREATE TABLE IF NOT EXISTS for safety
+  }
 
   // Migration: add frozen_until to proxy_health (v4.0.0)
   const columnExists = db.prepare("SELECT COUNT(*) as cnt FROM pragma_table_info('proxy_health') WHERE name='frozen_until'").get() as { cnt: number };
   if (columnExists.cnt === 0) {
     db.exec('ALTER TABLE proxy_health ADD COLUMN frozen_until INTEGER NOT NULL DEFAULT 0');
   }
-  db.pragma('journal_mode = WAL');
+
   return db;
 }
 interface StmtCache {

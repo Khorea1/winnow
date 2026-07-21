@@ -1,5 +1,7 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { isBlockedTarget } from '../proxy/dial.js';
 
 // Config resolution path: WINNOW_CONFIG env > --config cli flag (set in index.ts) > default.
 // Default respects WINNOW_DATA_DIR / DATA_DIR / cwd.
@@ -111,6 +113,7 @@ function clampInt(value: unknown, min: number, max: number, def: number): number
   if (typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max) return value;
   return def;
 }
+// Accepts non-integer numeric values (e.g., fractional timeouts).
 function clampNum(value: unknown, min: number, max: number, def: number): number {
   return typeof value === 'number' && value >= min && value <= max ? value : def;
 }
@@ -130,11 +133,11 @@ function sanitize(cfg: Record<string, unknown>): RotatorConfig {
   c.retries = clampInt(c.retries, 1, 20, DEFAULTS.retries);
   c.maxErrors = clampInt(c.maxErrors, 0, 100, DEFAULTS.maxErrors);
   c.timeout = clampNum(c.timeout, 500, 60000, DEFAULTS.timeout);
-  c.validationThreads = clampInt(c.validationThreads, 1, 100, DEFAULTS.validationThreads);
-  c.validationMode = ensureMode(c.validationMode, DEFAULTS.validationMode);
   c.validationBaseUrl = ensureString(c.validationBaseUrl, DEFAULTS.validationBaseUrl, (s) => {
     try {
-      new URL(s);
+      const u = new URL(s);
+      const host = u.hostname;
+      if (isBlockedTarget(host)) return false;
       return true;
     } catch {
       return false;
@@ -143,6 +146,7 @@ function sanitize(cfg: Record<string, unknown>): RotatorConfig {
   c.validationMaxLatency = clampInt(c.validationMaxLatency, 500, 30000, DEFAULTS.validationMaxLatency);
   c.validationConnectTimeout = clampInt(c.validationConnectTimeout, 1, 30, DEFAULTS.validationConnectTimeout);
   c.validationThrottle = clampInt(c.validationThrottle, 0, 5000, DEFAULTS.validationThrottle);
+  c.validationMode = ensureMode(c.validationMode, DEFAULTS.validationMode);
   c.validationTtfbRatio = clampInt(c.validationTtfbRatio, 1, 100, DEFAULTS.validationTtfbRatio);
   c.validationMaxGap = clampInt(c.validationMaxGap, 0, 60000, DEFAULTS.validationMaxGap);
   c.validationTlsHost = ensureString(c.validationTlsHost, DEFAULTS.validationTlsHost);
@@ -209,11 +213,12 @@ export function updateConfig(patch: Partial<RotatorConfig>, currentRuntime?: Par
   let current: Record<string, unknown> = {};
   try {
     if (fs.existsSync(configPath)) {
-      const parsed: unknown = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      const raw = fs.readFileSync(configPath, 'utf8');
+      const parsed: unknown = JSON.parse(raw);
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) current = { ...(parsed as Record<string, unknown>) };
     }
   } catch {
-    /* vazio abaixo é tratado por sanitize */
+    console.warn('[CONFIG] config file corrupted, keeping in-memory config');
   }
   // Apply runtime values (CLI overrides) as base before patch
   if (currentRuntime) {
@@ -228,11 +233,16 @@ export function updateConfig(patch: Partial<RotatorConfig>, currentRuntime?: Par
     if ((patch as Record<string, unknown>)[k] !== undefined) current[k] = (patch as Record<string, unknown>)[k];
   }
   const sanitized = sanitize(current);
-  const dir = path.dirname(configPath);
+  const dir = path.dirname(path.resolve(configPath));
   try {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  } catch {}
-  fs.writeFileSync(configPath, `${JSON.stringify(sanitized, null, 2)}\n`);
+    const tmpFile = path.join(dir, `.${path.basename(configPath)}.tmp-${crypto.randomBytes(8).toString('hex')}`);
+    fs.writeFileSync(tmpFile, `${JSON.stringify(sanitized, null, 2)}\n`, 'utf8');
+    fs.renameSync(tmpFile, configPath);
+  } catch (e) {
+    console.warn('[CONFIG] failed to write config:', e instanceof Error ? e.message : String(e));
+    return (currentRuntime || current) as RotatorConfig;
+  }
   return sanitized;
 }
 export { DEFAULTS };

@@ -1,4 +1,5 @@
 import net from 'node:net';
+import { parseLine } from '../../proxy/dial.js';
 
 export async function tcpCheck(host: string, port: number, timeoutMs: number): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -30,16 +31,8 @@ export async function tcpCheck(host: string, port: number, timeoutMs: number): P
 }
 
 export function parseProxyForTcp(proxyLine: string): { host: string; port: number } | null {
-  let line = proxyLine.trim();
-  if (!line) return null;
-  if (!line.includes('://')) line = `http://${line}`;
-  try {
-    const u = new URL(line);
-    const host = u.hostname;
-    const port = parseInt(u.port, 10);
-    if (!host || (u.port && !port)) return null;
-    return { host, port: port || 80 };
-  } catch {
-    return null;
-  }
+  const parsed = parseLine(proxyLine);
+  if (!parsed) return null;
+  const port = parseInt(parsed.url.port, 10) || (parsed.url.protocol === 'https:' ? 443 : 80);
+  return { host: parsed.url.hostname, port };
 }
