@@ -102,24 +102,6 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
       let failed = false;
       const start = Date.now();
 
-      try {
-        clientSock.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-      } catch {
-        try {
-          upSock.destroy();
-        } catch {}
-        return;
-      }
-
-      if (head?.length) {
-        upSock.write(head);
-        bytesUp += head.length;
-      }
-      if (upHead?.length) {
-        clientSock.write(upHead);
-        bytesDown += upHead.length;
-      }
-
       // ── Data forwarding with byte counting (manual pipe) ─────────────────
       // We use manual forwarding instead of .pipe() so we can count bytes
       // without attaching separate 'data' listeners that would fire alongside
@@ -151,6 +133,24 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
           clientSock.destroy();
         } catch {}
       });
+
+      try {
+        clientSock.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      } catch {
+        try {
+          upSock.destroy();
+        } catch {}
+        return;
+      }
+
+      if (head?.length) {
+        upSock.write(head);
+        bytesUp += head.length;
+      }
+      if (upHead?.length) {
+        clientSock.write(upHead);
+        bytesDown += upHead.length;
+      }
 
       const markFailure = (err?: unknown) => {
         if (failed) return;
@@ -225,6 +225,13 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
     } catch (e: unknown) {
       cancelTimeout?.();
       const errMsg = e instanceof Error ? e.message : String(e);
+      // Check for SSRF blocking
+      if (errMsg.includes('blocked by SSRF')) {
+        try {
+          clientSock.end('HTTP/1.1 403 Forbidden\r\n\r\n');
+        } catch {}
+        return;
+      }
       const errCode = e != null && typeof e === 'object' && 'code' in e ? String((e as Record<string, unknown>).code) : undefined;
       logger.error({ reqId, target: targetKey, error: errMsg }, 'connect all retries failed');
       EventLog.safePush(el, {
@@ -434,6 +441,21 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
               });
               markHttpFailure(new Error(`upstream ${statusCode}`));
             }
+            // After filtering through HOP_BY_HOP, also process Connection header values
+            let connectionValues: string[] = [];
+            for (let i = 1; i < lines.length; i++) {
+              const line = lines[i];
+              const sep = line.indexOf(':');
+              if (sep === -1) continue;
+              const k = line.slice(0, sep).trim().toLowerCase();
+              if (k === 'connection') {
+                connectionValues = line
+                  .slice(sep + 1)
+                  .split(',')
+                  .map((v) => v.trim().toLowerCase());
+                break;
+              }
+            }
             const respHeaders: Record<string, string | string[]> = {};
             for (let i = 1; i < lines.length; i++) {
               const line = lines[i];
@@ -441,7 +463,8 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
               if (sep === -1) continue;
               const k = line.slice(0, sep).trim();
               const v = line.slice(sep + 1).trim();
-              if (k && !(k.toLowerCase() in HOP_BY_HOP)) {
+              const kl = k.toLowerCase();
+              if (k && !(kl in HOP_BY_HOP) && !connectionValues.includes(kl)) {
                 const existing = respHeaders[k];
                 if (existing !== undefined) {
                   respHeaders[k] = Array.isArray(existing) ? [...existing, v] : [existing, v];
@@ -460,7 +483,13 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
                 }
                 upstreamBytes += rest.length;
               }
-            } catch {}
+            } catch {
+              markHttpFailure(new Error('failed to write response headers'));
+              try {
+                upSock.destroy();
+              } catch {}
+              return;
+            }
           } else {
             respBuf = combined;
           }
@@ -525,6 +554,14 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
     } catch (e: unknown) {
       if (cancelTimeout) cancelTimeout();
       const errMsg = e instanceof Error ? e.message : String(e);
+      // Check for SSRF blocking
+      if (errMsg.includes('blocked by SSRF')) {
+        try {
+          res.writeHead(403, { 'Content-Type': 'text/plain' });
+          res.end('Forbidden');
+        } catch {}
+        return;
+      }
       const errCode = e != null && typeof e === 'object' && 'code' in e ? String((e as Record<string, unknown>).code) : undefined;
       logger.error({ reqId, target: targetKey, error: errMsg }, 'http all retries failed');
       EventLog.safePush(el, { type: 'http', proxy: '(all)', target: targetKey, status: 'failure', error: errMsg, errorCode: errCode });
