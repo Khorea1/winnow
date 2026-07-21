@@ -8,6 +8,21 @@ export interface TlsResult {
   protocol?: string;
 }
 
+/**
+ * Perform a TLS handshake on an existing socket and immediately close it.
+ *
+ * The socket passed in is wrapped by a TLS layer for the handshake, then
+ * **terminated** (`.end()`) on success or destroyed on failure. It cannot be
+ * reused for further I/O. This function is intended for one-shot health /
+ * certificate checks, not for ongoing connections.
+ *
+ * @param sock - The raw (already-connected) socket to upgrade.
+ * @param host - SNI server name to present during the handshake.
+ * @param opts.insecure - If true, skip certificate validation (unauthorized
+ *                        results are returned instead of rejecting).
+ * @param opts.timeout - Handshake timeout in ms (default 5000).
+ * @returns TLS handshake result metadata.
+ */
 export function tlsHandshake(sock: net.Socket, host: string, opts: { insecure?: boolean; timeout?: number } = {}): Promise<TlsResult> {
   const timeout = opts.timeout ?? 5000;
   const insecure = opts.insecure ?? false;

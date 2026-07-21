@@ -9,10 +9,11 @@ export interface ParsedProxy {
 export function parseLine(line: string): ParsedProxy | null {
   line = line.trim();
   if (!line || line.startsWith('#')) return null;
+  const original = line;
   if (!line.includes('://')) line = `http://${line}`;
   try {
     const u = new URL(line);
-    return { raw: line, url: u, proto: u.protocol.replace(':', '') };
+    return { raw: original, url: u, proto: u.protocol.replace(':', '') };
   } catch {
     return null;
   }
@@ -67,8 +68,8 @@ export function parseHostPort(input: string, defaultPort = 443): { host: string;
 export function httpConnect(upstream: ParsedProxy, tHost: string, tPort: number, timeout: number): Promise<{ sock: net.Socket; head: Buffer }> {
   return new Promise((resolve, reject) => {
     const u = upstream.url;
-    const ph = u.hostname;
-    const pp = parseInt(u.port, 10) || 8080;
+    const portNum = parseInt(u.port, 10);
+    const pp = !isNaN(portNum) && portNum > 0 ? portNum : 8080;
     const user = u.username;
     // Uses string concatenation instead of a nested template literal, which broke tsc.
     let auth = '';
@@ -76,7 +77,7 @@ export function httpConnect(upstream: ParsedProxy, tHost: string, tPort: number,
       const token = Buffer.from(`${user}:${u.password}`).toString('base64');
       auth = `Proxy-Authorization: Basic ${token}\r\n`;
     }
-    const sock = net.connect(pp, ph);
+    const sock = net.connect(pp, u.hostname);
     let done = false;
     let buf = Buffer.alloc(0);
     const to = setTimeout(() => {
@@ -134,14 +135,45 @@ export function httpConnect(upstream: ParsedProxy, tHost: string, tPort: number,
   });
 }
 
+function socks5AddrBuffer(tHost: string, tPort: number): Buffer {
+  const pb = Buffer.alloc(2);
+  pb.writeUInt16BE(tPort, 0);
+  if (net.isIPv4(tHost)) {
+    const parts = tHost.split('.').map(Number);
+    return Buffer.concat([Buffer.from([0x05, 0x01, 0x00, 0x01, parts[0], parts[1], parts[2], parts[3]]), pb]);
+  }
+  if (net.isIPv6(tHost)) {
+    // Expand :: and convert to 16 raw bytes
+    const parts = tHost.split(':');
+    const gapIdx = parts.indexOf('');
+    const before = gapIdx === -1 ? parts : parts.slice(0, gapIdx);
+    const after = gapIdx === -1 ? [] : parts.slice(gapIdx + 1).filter((s) => s !== '');
+    const zerosNeeded = 8 - before.length - after.length;
+    const bytes: number[] = [];
+    for (const seg of before) {
+      const n = parseInt(seg || '0', 16);
+      bytes.push((n >> 8) & 0xff, n & 0xff);
+    }
+    for (let i = 0; i < zerosNeeded; i++) bytes.push(0, 0);
+    for (const seg of after) {
+      const n = parseInt(seg || '0', 16);
+      bytes.push((n >> 8) & 0xff, n & 0xff);
+    }
+    return Buffer.concat([Buffer.from([0x05, 0x01, 0x00, 0x04, ...bytes]), pb]);
+  }
+  // Domain name (existing behavior)
+  const hb = Buffer.from(tHost);
+  return Buffer.concat([Buffer.from([0x05, 0x01, 0x00, 0x03, hb.length]), hb, pb]);
+}
+
 // CONNECT handshake uses `timeout` ms (typically 3500). After success the
 // caller's data timeout applies — no separate phase needed.
 export function socks5Connect(upstream: ParsedProxy, tHost: string, tPort: number, timeout: number): Promise<{ sock: net.Socket; head: Buffer }> {
   return new Promise((resolve, reject) => {
     const u = upstream.url;
-    const ph = u.hostname;
-    const pp = parseInt(u.port, 10) || 1080;
-    const sock = net.connect(pp, ph);
+    const portNum = parseInt(u.port, 10);
+    const pp = !isNaN(portNum) && portNum > 0 ? portNum : 1080;
+    const sock = net.connect(pp, u.hostname);
     let done = false;
     const to = setTimeout(() => {
       if (!done) {
@@ -195,10 +227,7 @@ export function socks5Connect(upstream: ParsedProxy, tHost: string, tPort: numbe
           reject(new Error('socks5 no auth'));
           return;
         }
-        const hb = Buffer.from(tHost);
-        const pb = Buffer.alloc(2);
-        pb.writeUInt16BE(tPort, 0);
-        sock.write(Buffer.concat([Buffer.from([0x05, 0x01, 0x00, 0x03, hb.length]), hb, pb]));
+        sock.write(socks5AddrBuffer(tHost, tPort));
         stage = 2;
       } else if (stage === 1) {
         if (data.length < 2) return;
@@ -209,10 +238,7 @@ export function socks5Connect(upstream: ParsedProxy, tHost: string, tPort: numbe
           reject(new Error('socks5 auth fail'));
           return;
         }
-        const hb = Buffer.from(tHost);
-        const pb = Buffer.alloc(2);
-        pb.writeUInt16BE(tPort, 0);
-        sock.write(Buffer.concat([Buffer.from([0x05, 0x01, 0x00, 0x03, hb.length]), hb, pb]));
+        sock.write(socks5AddrBuffer(tHost, tPort));
         stage = 2;
       } else {
         if (data.length < 2) return;
@@ -239,7 +265,9 @@ export function socks5Connect(upstream: ParsedProxy, tHost: string, tPort: numbe
 }
 
 export async function dial(upstream: ParsedProxy, h: string, p: number, timeout: number) {
-  return upstream.proto.startsWith('socks') ? socks5Connect(upstream, h, p, timeout) : httpConnect(upstream, h, p, timeout);
+  if (upstream.proto === 'socks5') return socks5Connect(upstream, h, p, timeout);
+  if (upstream.proto === 'socks4' || upstream.proto === 'socks4a') throw new Error('SOCKS4 not supported');
+  return httpConnect(upstream, h, p, timeout);
 }
 
 // Blocked ranges for proxy CONNECT/HTTP targets (SSRF prevention).

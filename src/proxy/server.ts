@@ -115,12 +115,7 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
     let cancelTimeout: (() => void) | undefined;
 
     try {
-      const {
-        sock: upSock,
-        head: upHead,
-        upstream,
-        latency: dialLatency,
-      } = await tryWithRetry(proxies, ctx.health, config, tHost, tPort, targetKey, el, reqId);
+      const { sock: upSock, head: upHead, upstream, latency: dialLatency } = await tryWithRetry(proxies, ctx.health, config, tHost, tPort, el, reqId);
 
       logger.info({ reqId, proxy: upstream.raw, target: targetKey, latency: dialLatency }, 'connect upstream acquired');
       EventLog.safePush(el, { type: 'connect', proxy: upstream.raw, target: targetKey, status: 'success', latency: dialLatency });
@@ -149,20 +144,28 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
         bytesDown += upHead.length;
       }
 
-      // Pipe with byte counting
+      // ── Data forwarding with byte counting (manual pipe) ─────────────────
+      // We use manual forwarding instead of .pipe() so we can count bytes
+      // without attaching separate 'data' listeners that would fire alongside
+      // pipe() — that would double-process every chunk.
       const onUpData = (chunk: Buffer) => {
         bytesDown += chunk.length;
+        const ok = clientSock.write(chunk);
+        if (!ok) upSock.pause();
       };
       const onClientData = (chunk: Buffer) => {
         bytesUp += chunk.length;
+        const ok = upSock.write(chunk);
+        if (!ok) clientSock.pause();
       };
       upSock.on('data', onUpData);
       clientSock.on('data', onClientData);
-
-      upSock.pipe(clientSock);
-      clientSock.pipe(upSock);
+      clientSock.on('drain', () => upSock.resume());
+      upSock.on('drain', () => clientSock.resume());
+      upSock.on('end', () => clientSock.end());
+      clientSock.on('end', () => upSock.end());
       // Timeout: TTFB on first data, idle after
-      cancelTimeout = startSocketTimeout([upSock, clientSock], config.timeout, config.upstreamIdleTimeout || config.timeout * 2, () => {
+      cancelTimeout = startSocketTimeout([upSock, clientSock], Math.max(config.timeout, 15000), config.upstreamIdleTimeout || config.timeout * 2, () => {
         if (failed) return;
         failed = true;
         logger.warn({ reqId, proxy: upstream.raw, target: targetKey }, 'tunnel timeout');
@@ -200,11 +203,28 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
         ctx.onRequestMetrics?.({ proxy: upstream.raw, target: targetKey, success: true, latency: totalLatency, bytes: totalBytes });
         logger.info({ reqId, proxy: upstream.raw, target: targetKey, bytes: totalBytes, latency: totalLatency }, 'tunnel completed');
       };
-
       clientSock.on('error', () => {
         /* client error does not penalize proxy */
       });
+      // Must listen to upSock error to prevent unhandled error crashing the process
+      upSock.on('error', (err: Error) => {
+        markFailure(err);
+        try {
+          upSock.destroy();
+        } catch {}
+        try {
+          clientSock.destroy();
+        } catch {}
+      });
 
+      // ── Close handling ───────────────────────────────────────────────────
+      // Only upSock.close() records health (success/failure). We use its
+      // authoritative view of the upstream connection lifecycle:
+      //   - An "early close" (<500ms, no data, <100 bytes up) implies the
+      //     upstream rejected the tunnel without a clear HTTP error.
+      //   - Otherwise the tunnel completed normally.
+      // clientSock.close() never scores health — it only destroys the upstream
+      // socket for a clean shutdown on the client side.
       upSock.on('close', () => {
         cancelTimeout?.();
         const elapsed = Date.now() - start;
@@ -220,9 +240,9 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
       });
       clientSock.on('close', () => {
         cancelTimeout?.();
-        if (bytesDown > 0) markSuccess();
+        // client close — no health scoring; only clean up the upstream side
         try {
-          upSock.end();
+          upSock.destroy();
         } catch {}
       });
     } catch (e: unknown) {
@@ -256,6 +276,7 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
       let targetUrl: URL;
       try {
         targetUrl = new URL(req.url ?? '/');
+        if (!targetUrl.hostname) throw new Error('relative URL');
       } catch {
         // req.url may be path only, use Host header
         const host = req.headers.host;
@@ -277,7 +298,7 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
       targetKey = `${tHost}:${tPort}`;
       const config = ctx.config.current;
       const proxies = ctx.getProxies();
-      const { sock: upSock, upstream, latency: dialLatency } = await tryWithRetry(proxies, ctx.health, config, tHost, tPort, targetKey, el, reqId);
+      const { sock: upSock, upstream, latency: dialLatency } = await tryWithRetry(proxies, ctx.health, config, tHost, tPort, el, reqId);
 
       logger.info({ reqId, proxy: upstream.raw, target: targetKey, latency: dialLatency }, 'http upstream acquired');
       EventLog.safePush(el, { type: 'http', proxy: upstream.raw, target: targetKey, status: 'success', latency: dialLatency });
@@ -303,17 +324,19 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
         });
       };
 
-      // Send request to upstream
+      // Send request to upstream — preserve original header casing via rawHeaders
       const pathAndQuery = targetUrl.pathname + targetUrl.search;
       let reqHeaderLines = '';
-      for (const [k, v] of Object.entries(req.headers)) {
+      for (let i = 0; i < req.rawHeaders.length; i += 2) {
+        const k = req.rawHeaders[i];
         if (k.toLowerCase() in STRIPPED_REQUEST_HEADERS) continue;
-        if (Array.isArray(v)) reqHeaderLines += `${k}: ${v.join(', ')}\r\n`;
-        else if (v) reqHeaderLines += `${k}: ${v}\r\n`;
+        reqHeaderLines += `${k}: ${req.rawHeaders[i + 1]}\r\n`;
       }
-      const reqLine = `${req.method} ${pathAndQuery} HTTP/1.1\r\nHost: ${tHost}\r\n${reqHeaderLines}Connection: close\r\n\r\n`;
+      // Use targetUrl.host to include port when non-default (e.g. Host: example.com:8080)
+      const reqLine = `${req.method} ${pathAndQuery} HTTP/1.1\r\nHost: ${targetUrl.host}\r\n${reqHeaderLines}Connection: keep-alive\r\n\r\n`;
       upSock.write(reqLine);
-      cancelTimeout = startSocketTimeout([upSock], config.timeout, config.upstreamIdleTimeout || config.timeout * 2, () => {
+      // Also watch client socket — slow client body send shouldn't kill upstream timeout
+      cancelTimeout = startSocketTimeout([upSock, req.socket], config.timeout, config.upstreamIdleTimeout || config.timeout * 2, () => {
         if (requestFailed) return;
         requestFailed = true;
         ctx.health.recordFailure(upstream.raw, targetKey, { message: 'upstream timeout' }, config);
@@ -322,29 +345,39 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
         upSock.destroy();
         try {
           if (!res.writableEnded) {
-            if (!res.headersSent) res.writeHead(504, { 'Content-Type': 'text/plain' });
-            res.end('Gateway Timeout');
+            if (!res.headersSent) {
+              res.writeHead(504, { 'Content-Type': 'text/plain' });
+              res.end('Gateway Timeout');
+            } else {
+              res.destroy(); // abort cleanly — client sees truncated connection
+            }
           }
         } catch {}
       });
-
       const MAX_BODY_BYTES = 10 * 1024 * 1024;
       let bodyBytes = 0;
+      // Manual body write with backpressure — avoids dual-listener race from req.pipe + req.on('data')
       if (req.method !== 'GET' && req.method !== 'HEAD') {
         req.on('data', (chunk: Buffer) => {
           requestBodyBytes += chunk.length;
           bodyBytes += chunk.length;
           if (bodyBytes > MAX_BODY_BYTES && !requestFailed) {
             cancelTimeout?.();
-            req.unpipe(upSock);
             req.destroy();
             upSock.destroy();
             requestFailed = true;
-            res.writeHead(413, { 'Content-Type': 'text/plain' });
-            res.end('Payload Too Large');
+            try {
+              if (!res.headersSent) res.writeHead(413, { 'Content-Type': 'text/plain' });
+              if (!res.writableEnded) res.end('Payload Too Large');
+            } catch {}
+            return;
+          }
+          const ok = upSock.write(chunk);
+          if (!ok) {
+            req.pause();
+            upSock.once('drain', () => req.resume());
           }
         });
-        req.pipe(upSock);
       }
 
       // Read upstream response and forward — parse headers, filter hop-by-hop, pass to client

@@ -33,7 +33,6 @@ export async function tryWithRetry(
   config: RotatorConfig,
   tHost: string,
   tPort: number,
-  _forTarget?: string,
   eventLog?: EventLog,
   reqId?: string,
 ): Promise<{ sock: net.Socket; head: Buffer; upstream: ParsedProxy; latency: number }> {
