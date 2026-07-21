@@ -405,7 +405,18 @@ export function registerDashboard(
 
       // Not a dashboard route — delegate to original listeners (HTTP proxy handler)
       for (const listener of origListeners) {
-        listener(req, res);
+        try {
+          listener(req, res);
+        } catch (err) {
+          logger.error({ error: err instanceof Error ? err.message : String(err) }, 'original request listener error');
+          if (!res.headersSent) {
+            try {
+              res.writeHead(500, { 'Content-Type': 'text/plain' });
+              res.end('Internal Server Error');
+            } catch {}
+          }
+          break;
+        }
       }
     } catch (e: unknown) {
       try {
