@@ -45,12 +45,15 @@ export class EventLog {
       this._tail = (this._tail + 1) % this._max;
     }
     // Notify listeners — failures must never crash the app
-    for (const fn of [...this.listeners]) {
+    if (this.listeners.size > 0) {
+      const listeners = [...this.listeners];
       queueMicrotask(() => {
-        try {
-          fn(e);
-        } catch {
-          /* listener errors never crash the app */
+        for (const fn of listeners) {
+          try {
+            fn(e);
+          } catch {
+            /* listener errors never crash the app */
+          }
         }
       });
     }
@@ -70,9 +73,8 @@ export class EventLog {
   recent(limit?: number): ProxyEvent[] {
     const count = Math.min(limit ?? this._size, this._size);
     const result: ProxyEvent[] = [];
-    const start = this._size > count ? (this._tail + (this._size - count)) % this._max : this._tail;
     for (let i = 0; i < count; i++) {
-      const idx = (start + i) % this._max;
+      const idx = (this._head - 1 - i + this._max) % this._max;
       const entry = this._buffer[idx];
       if (entry) result.push(entry);
     }
@@ -88,5 +90,6 @@ export class EventLog {
     this._head = 0;
     this._tail = 0;
     this._size = 0;
+    this.listeners.clear(); // Also clear listeners
   }
 }
