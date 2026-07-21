@@ -41,7 +41,8 @@ export async function tryWithRetry(
   const hostKey = tHost.includes(':') ? `[${tHost}]` : tHost;
   const targetKey = `${hostKey}:${tPort}`;
   const isTargetTracked = config.targets.includes(targetKey);
-  const candidates = pickMany(proxies, health, config.retries, isTargetTracked ? targetKey : undefined, config.maxErrors);
+  const n = Math.max(1, config.retries);
+  const candidates = pickMany(proxies, health, n, isTargetTracked ? targetKey : undefined, config.maxErrors);
   if (!candidates.length) {
     logger.warn({ target: targetKey, reqId }, 'no proxies alive');
     EventLog.safePush(eventLog, { type: 'pool', proxy: '(all)', target: targetKey, status: 'failure', error: 'no proxies alive' });
@@ -55,7 +56,6 @@ export async function tryWithRetry(
     try {
       const { sock, head } = await dial(upstream, tHost, tPort, config.timeout);
       const latency = Date.now() - start;
-      health.recordSuccess(upstream.raw, isTargetTracked ? targetKey : undefined, latency, start);
       logger.info({ proxy: upstream.raw, target: targetKey, latency, reqId }, 'upstream dial succeeded');
       return { sock, head, upstream, latency };
     } catch (e: unknown) {
@@ -103,14 +103,23 @@ export async function healthCheckTick(proxies: ParsedProxy[], health: HealthStor
   await Promise.allSettled(
     toCheck.map(async (p) => {
       const dialStart = Date.now();
-      EventLog.safePush(eventLog, { type: 'healthcheck', proxy: p.raw, target, status: 'attempt' });
       try {
         const { sock } = await dial(p, parsed.host, parsed.port, config.timeout);
         if (TLS_PORTS[parsed.port]) {
           try {
             const tlsRes = await tlsHandshake(sock, parsed.host, { insecure: !config.validationStrictTLS, timeout: config.timeout });
-            if (config.validationStrictTLS && !tlsRes.authorized) {
-              throw new Error(`TLS invalid: ${tlsRes.authorizationError}`);
+            if (!tlsRes.authorized) {
+              sock.destroy();
+              if (config.validationStrictTLS) {
+                throw new Error(`TLS invalid: ${tlsRes.authorizationError}`);
+              }
+              // Non-strict: TLS handshake completed (proxy reachable) but cert is bad.
+              // Record as transient failure — the proxy is working, just the upstream cert is bad.
+              const errMsg = `TLS unauthorized: ${tlsRes.authorizationError}`;
+              EventLog.safePush(eventLog, { type: 'healthcheck', proxy: p.raw, target, status: 'failure', error: errMsg, errorClass: 'transient' });
+              logger.warn({ proxy: p.raw, target, error: errMsg }, 'health check TLS failure (non-strict)');
+              health.recordFailure(p.raw, target, new Error('upstream error'), config, Date.now());
+              return; // skip success path
             }
             sock.destroy();
           } catch (e: unknown) {

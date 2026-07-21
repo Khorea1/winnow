@@ -4,100 +4,14 @@ import type Database from 'better-sqlite3';
 import { type HealthRowInput, insertHealth, loadHealth, removeProxyHealth } from '../db/index.js';
 import { EventLog } from '../events.js';
 import { createLogger } from '../logger.js';
+import { applyFailure, applySuccess, classifyError, type HealthEntry } from './classify.js';
 
 const logger = createLogger('health');
 
-export interface HealthEntry {
-  errors: number;
-  successes: number;
-  latency: number;
-  bannedUntil: number;
-  lastOk: number;
-  fatalErrors: number;
-  frozenUntil: number;
-}
-
-// --- Error classification: fatal (proxy structurally dead) vs transient (flaky) ---
-// Fatal: the proxy itself is non-functional -- connection refused, TLS/cert failure,
-// DNS failure, SOCKS protocol error. These are unlikely to recover on retry.
-// Transient: the proxy is reachable but flaky -- timeout, upstream 5xx, early close,
-// connection reset during data transfer. Retry has a chance of success.
-const FATAL_ERR_CODES = new Set([
-  'ECONNREFUSED', // TCP connect refused -- proxy down or wrong port
-  'EADDRNOTAVAIL',
-  'ENETUNREACH',
-  'EHOSTUNREACH',
-  'ENOTFOUND', // DNS resolution failure for the proxy host
-  'CERT_HAS_EXPIRED',
-  'CERT_NOT_YET_VALID',
-  'DEPTH_ZERO_SELF_SIGNED_CERT',
-  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
-  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
-  'ERR_SSL_DECRYPTION_FAILED',
-  'ERR_TLS_CERT_ALTNAME_INVALID',
-  'ERR_TLS_HANDSHAKE_TIMEOUT',
-  'ERR_TLS_INVALID_PROTOCOL_METHOD',
-  'EPROTO', // generic TLS protocol error
-]);
-// Error message fragments that mark an error as fatal when err.code is missing.
-// Only patterns NOT covered by FATAL_ERR_CODES are kept: TLS/SSL errors,
-// certificate issues, handshake failures, SOCKS protocol mentions, and
-// generic protocol errors often lack a standard err.code.
-const FATAL_MSG_REGEX = /\b(?:TLS|SSL|certificate|self[- ]?signed|handshake|SOCKS|protocol error)/i;
-// SOCKSv5 reply codes indicating the proxy itself rejected the request.
-const SOCKS_FATAL_REPLIES = new Set([0x01, 0x02, 0x03, 0x04, 0x05, 0x07, 0x08]);
-
-export function classifyError(e: unknown): 'fatal' | 'transient' {
-  if (!e || typeof e !== 'object') return 'transient';
-  const err = e as Record<string, unknown>;
-  const code = String(err.code ?? '');
-  if (code && FATAL_ERR_CODES.has(code)) return 'fatal';
-  // SOCKSv5 reply-code attached by socks5Connect when the proxy returned an error
-  if (typeof err.socksReply === 'number' && SOCKS_FATAL_REPLIES.has(err.socksReply)) return 'fatal';
-  const msg = String(err.message ?? '');
-  if (msg) {
-    if (FATAL_MSG_REGEX.test(msg)) return 'fatal';
-  }
-  return 'transient';
-}
-// ── Shared helpers (used by rotator.ts and server.ts) ──────────────────────
-
-export function transientBanMs(errors: number, banBaseMs: number, banMultiplier: number, banMaxMs: number): number {
-  const k = Math.max(0, Math.min(errors - 1, 6));
-  const raw = banBaseMs * banMultiplier ** k;
-  return Math.min(raw, banMaxMs);
-}
-
-export function applyFailure(
-  h: HealthEntry,
-  e: unknown,
-  config: { maxFatalErrors: number; fatalBanMs: number; banBaseMs: number; banMultiplier: number; banMaxMs: number },
-  now: number,
-) {
-  if (classifyError(e) === 'fatal') {
-    h.fatalErrors++;
-    if (h.fatalErrors >= config.maxFatalErrors) {
-      h.frozenUntil = now + config.fatalBanMs * 3;
-    } else {
-      h.bannedUntil = Math.max(h.bannedUntil, now + config.fatalBanMs);
-    }
-  } else {
-    h.errors++;
-    h.bannedUntil = now + transientBanMs(h.errors, config.banBaseMs, config.banMultiplier, config.banMaxMs);
-  }
-}
-/**
- * Record a success. Decrements errors, updates latency EMA, clears bannedUntil.
- * Does NOT reset frozenUntil — only the boot-time prune pass in HealthStore unfreezes proxies.
- */
-export function applySuccess(h: HealthEntry, latency: number, now: number) {
-  h.latency = h.latency === 9999 ? latency : Math.floor(h.latency * 0.7 + latency * 0.3);
-  h.successes = Math.min(h.successes + 1, 200);
-  h.errors = Math.max(0, h.errors - 1);
-  h.fatalErrors = Math.max(0, h.fatalErrors - 1);
-  h.bannedUntil = 0;
-  h.lastOk = now;
-}
+// ── Re-exports for backward compatibility ─────────────────────────────────
+// classifyError, transientBanMs, applyFailure, applySuccess, HealthEntry
+// moved to ./classify.ts.
+export { applyFailure, applySuccess, classifyError, type HealthEntry, transientBanMs } from './classify.js';
 
 export function ensureStarEntry(health: HealthStore, proxy: string): HealthEntry {
   let h = health.get(proxy);
@@ -119,13 +33,15 @@ export class HealthStore extends EventEmitter {
   private _deleted: Set<string> = new Set();
   private _timer: NodeJS.Timeout;
   private _eventLog?: EventLog;
+  private _pendingUpdates: Set<string> = new Set();
+  private _pendingEmitScheduled = false;
 
-  constructor(db: Database.Database, config: { pruneAfterMs: number; fatalBanMs: number }, eventLog?: EventLog) {
+  constructor(db: Database.Database, config: { pruneAfterMs: number; fatalBanMs: number; maxFatalErrors?: number }, eventLog?: EventLog) {
     super();
     this.db = db;
     this._eventLog = eventLog;
     this._load();
-    this._pruneFrozenOnBoot(config.pruneAfterMs, config.fatalBanMs);
+    this._pruneFrozenOnBoot(config.pruneAfterMs, config.fatalBanMs, config.maxFatalErrors ?? 3);
     this._timer = setInterval(() => this._flush(), 5000);
     this._timer.unref();
   }
@@ -140,7 +56,7 @@ export class HealthStore extends EventEmitter {
       this._data.set(proxy, byTarget);
     }
     byTarget.set('*', val);
-    this._dirty.add(`${proxy}\x00*`);
+    this._dirty.add(this._key(proxy, '*'));
   }
 
   has(proxy: string) {
@@ -153,14 +69,19 @@ export class HealthStore extends EventEmitter {
     return this._data.size;
   }
 
+  private _key(proxy: string, target: string): string {
+    return `${proxy}\x00${target}`;
+  }
+
   delete(proxy: string) {
     this._data.delete(proxy);
     this._deleted.add(proxy);
   }
 
   dirty(proxy: string) {
-    this._dirty.add(`${proxy}\x00*`);
-    this.emit('health:update', { proxy, target: '*', time: Date.now() });
+    this._dirty.add(this._key(proxy, '*'));
+    this._pendingUpdates.add(this._key(proxy, '*'));
+    this._scheduleFlushUpdates();
   }
 
   getTarget(proxy: string, target: string) {
@@ -174,12 +95,31 @@ export class HealthStore extends EventEmitter {
       this._data.set(proxy, byTarget);
     }
     byTarget.set(target, val);
-    this._dirty.add(`${proxy}\x00${target}`);
+    this._dirty.add(this._key(proxy, target));
   }
 
   dirtyTarget(proxy: string, target: string) {
-    this._dirty.add(`${proxy}\x00${target}`);
-    this.emit('health:update', { proxy, target, time: Date.now() });
+    this._dirty.add(this._key(proxy, target));
+    this._pendingUpdates.add(this._key(proxy, target));
+    this._scheduleFlushUpdates();
+  }
+
+  private _scheduleFlushUpdates() {
+    if (this._pendingEmitScheduled) return;
+    this._pendingEmitScheduled = true;
+    queueMicrotask(() => this._flushUpdates());
+  }
+
+  private _flushUpdates() {
+    this._pendingEmitScheduled = false;
+    const now = Date.now();
+    for (const key of this._pendingUpdates) {
+      const sep = key.indexOf('\x00');
+      const proxy = key.slice(0, sep);
+      const target = key.slice(sep + 1);
+      this.emit('health:update', { proxy, target, time: now });
+    }
+    this._pendingUpdates.clear();
   }
   /**
    * Record a success. Updates the per-target entry (if target given) AND the
@@ -228,8 +168,6 @@ export class HealthStore extends EventEmitter {
     if (target && target !== '*') {
       const te = this.getTarget(proxy, target);
       if (te) {
-        const _teWasBanned = te.bannedUntil > now;
-        const _teWasFrozen = te.frozenUntil > now;
         applyFailure(te, err, config, now);
         this.dirtyTarget(proxy, target);
       } else {
@@ -280,10 +218,10 @@ export class HealthStore extends EventEmitter {
 
   /**
    * Boot-time prune pass: demote any persisted frozen/banned-less-frozen rows
-   * to a finite `pruneAfterMs` ban so the proxy can come back alive. Decay
-   * fatalErrors to half so one more fatal re-freezes.
+   * to a finite `pruneAfterMs` ban so the proxy can come back alive. Reduce
+   * fatalErrors by maxFatalErrors-1 so one more fatal reaches the threshold.
    */
-  private _pruneFrozenOnBoot(pruneAfterMs: number, fatalBanMs: number) {
+  private _pruneFrozenOnBoot(pruneAfterMs: number, fatalBanMs: number, maxFatalErrors: number) {
     const now = Date.now();
     const demotionPeriod = Math.min(pruneAfterMs, fatalBanMs * 3);
     const demotedTo = now + demotionPeriod;
@@ -293,9 +231,9 @@ export class HealthStore extends EventEmitter {
         if (e.frozenUntil > 0) {
           e.frozenUntil = 0;
           e.bannedUntil = demotedTo;
-          this._dirty.add(`${proxy}\x00${target}`);
+          this._dirty.add(this._key(proxy, target));
           // Decay fatal errors so one more fatal re-freezes
-          e.fatalErrors = Math.floor(e.fatalErrors / 2);
+          e.fatalErrors = Math.max(0, e.fatalErrors - (maxFatalErrors - 1));
           e.errors = 0;
           count++;
           // LOG: emit unban event on boot thaw
