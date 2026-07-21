@@ -6,14 +6,9 @@ const LEVEL_MAP: Record<LogLevel, number> = {
   warn: 2,
   error: 3,
 };
-
-let _minLevel: number | null = null;
-
 function resolveMinLevel(): number {
-  if (_minLevel !== null) return _minLevel;
   const env = (process.env.LOG_LEVEL || 'info').toLowerCase() as LogLevel;
-  _minLevel = LEVEL_MAP[env] ?? LEVEL_MAP.info;
-  return _minLevel;
+  return LEVEL_MAP[env] ?? LEVEL_MAP.info;
 }
 
 function formatTime(d: Date): string {
@@ -50,16 +45,21 @@ export function createLogger(name: string): Logger {
       if (k === 'time' || k === 'level' || k === 'name' || k === 'msg') continue;
       entry[k] = v;
     }
-    let jsonStr: string;
+    let jsonStr = '';
+    let jsonError: string | undefined;
     try {
       jsonStr = JSON.stringify(entry);
-    } catch {
+    } catch (e) {
+      jsonError = e instanceof Error ? e.message : String(e);
+    }
+    if (jsonError) {
       jsonStr = JSON.stringify({
+        ...entry,
         time: entry.time,
         level: entry.level,
         name: entry.name,
         msg: entry.msg,
-        _circular: true,
+        _jsonError: jsonError,
       });
     }
     try {

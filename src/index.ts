@@ -7,7 +7,7 @@ import { loadConfig, resolveDataDir } from './config/index.js';
 import { registerDashboard } from './dashboard/index.js';
 import { initDb } from './db/index.js';
 import { EventLog } from './events.js';
-import { HealthStore } from './health/index.js';
+import { blankEntry, HealthStore } from './health/index.js';
 import { createLogger } from './logger.js';
 import { type ParsedProxy, parseLine } from './proxy/dial.js';
 import { healthCheckTick } from './proxy/rotator.js';
@@ -30,7 +30,12 @@ function parseArgv(args: string[]): Record<string, string | number | boolean> {
     }
     if (a.startsWith('-') && a.length === 2) {
       const ALIASES: Record<string, string> = { p: 'port', f: 'proxyfile', c: 'config', v: 'validationmode', t: 'timeout', d: 'datadir' };
-      r[ALIASES[a[1]] ?? a[1]] = i + 1 < args.length && !args[i + 1].startsWith('-') ? args[++i] : true;
+      const alias = ALIASES[a[1]];
+      if (!alias) {
+        console.warn(`Unknown flag: ${a}`);
+        continue;
+      }
+      r[alias] = i + 1 < args.length && !args[i + 1].startsWith('-') ? args[++i] : true;
     }
   }
   return r;
@@ -43,6 +48,14 @@ const cliPort = typeof argv.port === 'string' ? Number(argv.port) : undefined;
 const cliProxyFile = typeof argv.proxyfile === 'string' ? argv.proxyfile : undefined;
 const cliConfig = typeof argv.config === 'string' ? argv.config : undefined;
 const cliTimeout = typeof argv.timeout === 'string' ? Number(argv.timeout) : undefined;
+if (cliPort !== undefined && !Number.isFinite(cliPort)) {
+  console.error('Invalid --port value');
+  process.exit(1);
+}
+if (cliTimeout !== undefined && !Number.isFinite(cliTimeout)) {
+  console.error('Invalid --timeout value');
+  process.exit(1);
+}
 const cliValidationMode = typeof argv.validationmode === 'string' ? argv.validationmode : process.env.WINNOW_VALIDATION_MODE || undefined;
 const cliDataDir = typeof argv.datadir === 'string' ? argv.datadir : process.env.WINNOW_DATA_DIR || process.env.DATA_DIR || undefined;
 // If --data-dir was passed, set env so config resolvers use it
@@ -97,20 +110,26 @@ function load() {
     return;
   }
   _pendingReload = false;
+  let list: ParsedProxy[];
   try {
-    const list = fs
-      .readFileSync(config.proxyFile, 'utf8')
+    const content = fs.readFileSync(config.proxyFile, 'utf8');
+    list = content
       .split('\n')
       .map(parseLine)
       .filter((p): p is ParsedProxy => p !== null);
+  } catch (e: unknown) {
+    logger.warn({ error: e instanceof Error ? e.message : String(e) }, 'failed to read proxy file');
+    return;
+  }
+  try {
     const newSet = new Set(list.map((p) => p.raw));
     for (const k of health.keys()) if (!newSet.has(k)) health.delete(k);
-    for (const p of list)
-      if (!health.has(p.raw)) health.set(p.raw, { errors: 0, successes: 0, latency: 9999, bannedUntil: 0, lastOk: 0, fatalErrors: 0, frozenUntil: 0 });
+    for (const p of list) if (!health.has(p.raw)) health.set(p.raw, blankEntry());
     proxies = list;
     logger.info({ count: proxies.length }, 'loaded proxies');
   } catch (e: unknown) {
-    logger.warn({ file: config.proxyFile, error: e instanceof Error ? e.message : String(e) }, 'failed to load proxy file');
+    logger.error({ error: e instanceof Error ? e.message : String(e) }, 'failed to sync health');
+    return;
   }
 }
 
@@ -184,7 +203,16 @@ process.on('uncaughtException', (err) => {
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('unhandledRejection', (reason) => {
-  logger.warn({ error: String(reason) }, 'unhandled rejection');
+  hadUncaughtException = true;
+  const ctx: Record<string, unknown> = {};
+  if (reason instanceof Error) {
+    ctx.error = reason.message;
+    ctx.stack = reason.stack;
+  } else {
+    ctx.error = String(reason);
+  }
+  logger.warn(ctx, 'unhandled rejection');
+  shutdown('unhandledRejection');
 });
 let _hcRunning = false;
 let _pendingReload = false;
@@ -210,28 +238,51 @@ server.on('error', (err: NodeJS.ErrnoException) => {
   }
   shutdown('server_error');
 });
-server.listen(config.port, '0.0.0.0', () => {
-  logger.info({ port: config.port, file: config.proxyFile, retries: config.retries, timeout: config.timeout, targets: config.targets }, 'server started');
-});
 // Write PID file for graceful stop
 try {
   const pidPath = path.join(resolveDataDir(), '.winnow.pid');
+  try {
+    const existingPid = fs.readFileSync(pidPath, 'utf8').trim();
+    if (existingPid) {
+      try {
+        process.kill(parseInt(existingPid, 10), 0);
+        console.error(`Another instance already running (PID ${existingPid}). Exiting.`);
+        process.exit(1);
+      } catch (e: unknown) {
+        if ((e as NodeJS.ErrnoException).code !== 'ESRCH') throw e;
+      }
+    }
+  } catch {}
   fs.writeFileSync(pidPath, String(process.pid), 'utf8');
 } catch {
   /* non-fatal */
 }
 // Initial load
 load();
+// Start server — wrap in error handling for EADDRINUSE etc.
+server.listen(config.port, '0.0.0.0', () => {
+  logger.info({ port: config.port, file: config.proxyFile, retries: config.retries, timeout: config.timeout, targets: config.targets }, 'server started');
+});
 // Watch for file changes (inotify on Linux — instant vs polling)
 // Debounce: fs.watch can fire multiple events for a single save
 let _reloadTimer: NodeJS.Timeout | undefined;
 const watchDir = path.dirname(path.resolve(config.proxyFile));
 const watchFile = path.basename(config.proxyFile);
+let _lastMtime = 0;
 try {
   fileWatcher = fs.watch(watchDir, (_eventType, filename) => {
-    if (filename === watchFile) {
+    if (filename === watchFile || filename === null) {
       clearTimeout(_reloadTimer);
       _reloadTimer = setTimeout(() => load(), 300);
+    } else {
+      try {
+        const mtime = fs.statSync(config.proxyFile).mtimeMs;
+        if (mtime > _lastMtime) {
+          _lastMtime = mtime;
+          clearTimeout(_reloadTimer);
+          _reloadTimer = setTimeout(() => load(), 300);
+        }
+      } catch {}
     }
   });
 } catch (e: unknown) {

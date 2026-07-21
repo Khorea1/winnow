@@ -40,6 +40,7 @@ export function initDb(dbPath: string): DatabaseType {
   const db = new Database(dbPath);
 
   db.pragma('journal_mode = WAL');
+  db.pragma('wal_autocheckpoint = 500');
 
   // Schema versioning
   const userVersion = db.pragma('user_version', { simple: true }) as number;
@@ -49,11 +50,13 @@ export function initDb(dbPath: string): DatabaseType {
   } else {
     db.exec(SCHEMA); // still run CREATE TABLE IF NOT EXISTS for safety
   }
-
-  // Migration: add frozen_until to proxy_health (v4.0.0)
-  const columnExists = db.prepare("SELECT COUNT(*) as cnt FROM pragma_table_info('proxy_health') WHERE name='frozen_until'").get() as { cnt: number };
-  if (columnExists.cnt === 0) {
-    db.exec('ALTER TABLE proxy_health ADD COLUMN frozen_until INTEGER NOT NULL DEFAULT 0');
+  // Version 2: add frozen_until
+  if ((db.pragma('user_version', { simple: true }) as number) < 2) {
+    const columnExists = db.prepare("SELECT COUNT(*) as cnt FROM pragma_table_info('proxy_health') WHERE name='frozen_until'").get() as { cnt: number };
+    if (columnExists.cnt === 0) {
+      db.exec('ALTER TABLE proxy_health ADD COLUMN frozen_until INTEGER NOT NULL DEFAULT 0');
+    }
+    db.pragma('user_version = 2');
   }
 
   return db;
@@ -64,6 +67,7 @@ interface StmtCache {
   loadAll: Statement<unknown[], HealthRow>;
   insertRun: Statement<[number]>;
   finishRun: Statement<[number, number, number, number, number, number]>;
+  upsertTx: (rows: HealthRowInput[]) => void;
 }
 const stmtCache = new WeakMap<DatabaseType, StmtCache>();
 function getStmts(db: DatabaseType): StmtCache {
@@ -86,6 +90,9 @@ function getStmts(db: DatabaseType): StmtCache {
       loadAll: db.prepare('SELECT * FROM proxy_health'),
       insertRun: db.prepare('INSERT INTO validation_runs (started) VALUES (?)'),
       finishRun: db.prepare('UPDATE validation_runs SET finished = ?, total = ?, passed = ?, failed = ?, exit_code = ? WHERE id = ?'),
+      upsertTx: db.transaction((rows: HealthRowInput[]) => {
+        for (const r of rows) s!.upsertHealth.run(r);
+      }),
     };
     stmtCache.set(db, s);
   }
@@ -105,11 +112,7 @@ export interface HealthRowInput {
 }
 
 export function insertHealth(db: DatabaseType, rows: HealthRowInput[]) {
-  const tx = db.transaction((rows: HealthRowInput[]) => {
-    const { upsertHealth } = getStmts(db);
-    for (const r of rows) upsertHealth.run(r);
-  });
-  tx(rows);
+  getStmts(db).upsertTx(rows);
 }
 
 export function loadHealth(db: DatabaseType): HealthRow[] {
