@@ -501,7 +501,7 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
       EventLog.safePush(el, { type: 'http', proxy: '(all)', target: targetKey, status: 'failure', error: errMsg, errorCode: errCode });
       try {
         res.writeHead(502, { 'Content-Type': 'text/plain' });
-        res.end(`Bad Gateway: ${errMsg}`);
+        res.end('Bad Gateway');
       } catch {}
     }
   });

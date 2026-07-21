@@ -83,14 +83,20 @@ export async function streamingCheck(
       } else {
         const str = d.toString();
         // Count non-empty lines as chunks (httpbin stream returns json per line)
-        const lines = str.split('\n').filter((l) => l.trim().length > 10);
-        if (lines.length) {
-          const gap = lastChunkTime ? now - lastChunkTime : 0;
-          if (gap > maxGap) maxGap = gap;
-          chunks += lines.length;
-          lastChunkTime = now;
-        } else if (str.trim()) {
-          chunks++;
+        const lines = str.split('\n');
+        let foundLine = false;
+        for (const line of lines) {
+          if (line.trim().length > 0) {
+            // Update lastChunkTime only on the first line of each TCP packet
+            // to measure real network gap (not intra-packet timing noise)
+            if (!foundLine) {
+              const gap = lastChunkTime ? now - lastChunkTime : 0;
+              if (gap > maxGap) maxGap = gap;
+              lastChunkTime = now;
+              foundLine = true;
+            }
+            chunks++;
+          }
         }
       }
     });
@@ -99,6 +105,10 @@ export async function streamingCheck(
       if (done) return;
       done = true;
       clearTimeout(timer);
+      // If headers never completed, the connection closed before we got a full response
+      if (headersEnd === -1) {
+        // Connection closed before headers complete — incomplete response
+      }
       const total = Date.now() - start;
       const ttfb = firstByte ? firstByte - start : total;
 

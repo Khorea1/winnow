@@ -138,15 +138,23 @@ export async function httpCheck(
         bodyStr = full;
       }
 
-      // Anon check
+      // Anon check: only inspect HTTP response headers, not body.
+      // The body (e.g. httpbin /ip) can contain the client IP, which is not
+      // evidence of a transparent proxy — only forwarded headers are.
       if (opts.anonCheck && status === 200) {
-        const lower = (headerStr + bodyStr).toLowerCase();
-        if (lower.includes('x-forwarded-for') || lower.includes('via:')) {
-          try {
-            socket.destroy();
-          } catch {}
-          reject(new Error('proxy transparent'));
-          return;
+        const headerLines = headerStr.split('\r\n');
+        for (let i = 1; i < headerLines.length; i++) {
+          const line = headerLines[i];
+          const sep = line.indexOf(':');
+          if (sep === -1) continue;
+          const name = line.slice(0, sep).trim().toLowerCase();
+          if (name === 'x-forwarded-for' || name === 'via') {
+            try {
+              socket.destroy();
+            } catch {}
+            reject(new Error('proxy transparent'));
+            return;
+          }
         }
       }
 

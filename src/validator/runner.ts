@@ -168,8 +168,9 @@ export async function runValidation(
         else invalid.push({ proxy: res.proxy, reason: res.error || 'error' });
         done++;
         onProgress?.(res, { total, done, valid: valid.length, invalid: invalid.length });
+        const sanitizedProxy = res.proxy.replace(/\/\/.*@/, '//***:***@');
         logger.debug(
-          { proxy: res.proxy, valid: res.valid, stage: res.stage, error: res.error, done, total, validCount: valid.length, invalidCount: invalid.length },
+          { proxy: sanitizedProxy, valid: res.valid, stage: res.stage, error: res.error, done, total, validCount: valid.length, invalidCount: invalid.length },
           'validation result',
         );
       } catch (e: unknown) {
@@ -179,8 +180,9 @@ export async function runValidation(
         invalid.push({ proxy, reason: r.error! });
         done++;
         onProgress?.(r, { total, done, valid: valid.length, invalid: invalid.length });
+        const sanitizedProxy = r.proxy.replace(/\/\/.*@/, '//***:***@');
         logger.debug(
-          { proxy: r.proxy, valid: false, stage: r.stage, error: r.error, done, total, validCount: valid.length, invalidCount: invalid.length },
+          { proxy: sanitizedProxy, valid: false, stage: r.stage, error: r.error, done, total, validCount: valid.length, invalidCount: invalid.length },
           'validation error',
         );
       }

@@ -245,6 +245,25 @@ export async function dial(upstream: ParsedProxy, h: string, p: number, timeout:
 // 192.168/16), RFC 6598 CGNAT (100.64/10). Hostnames: localhost, *.local,
 // *.internal. IPv6: loopback ::1, IPv4-mapped private ranges via ::ffff:.
 // ULA (fc00::/7) is NOT blocked — internal networks legitimately use it.
+function normalizeIPv6(host: string): string {
+  // Only call after net.isIPv6(host) confirmed true
+  const lower = host.toLowerCase();
+  // Expand ::
+  let groups: string[];
+  if (lower.includes('::')) {
+    const parts = lower.split('::');
+    const left = parts[0] ? parts[0].split(':') : [];
+    const right = parts[1] ? parts[1].split(':') : [];
+    const missing = 8 - left.length - right.length;
+    groups = [...left, ...Array(missing).fill('0'), ...right];
+  } else {
+    groups = lower.split(':');
+  }
+  // Strip leading zeros from each group
+  groups = groups.map((g) => g.replace(/^0+/g, '') || '0');
+  return groups.join(':');
+}
+
 export function isBlockedTarget(host: string): boolean {
   // Hostname-based blocking (SSRF prevention for internal hostnames)
   const lower = host.toLowerCase();
@@ -263,16 +282,28 @@ export function isBlockedTarget(host: string): boolean {
     if (a === 172 && b >= 16 && b <= 31) return true; // RFC 1918 172.16/12
     if (a === 192 && b === 168) return true; // RFC 1918 192.168/16
   }
-
   // IPv6 checks
   if (net.isIPv6(host)) {
-    // IPv6 loopback full form
-    if (lower === '0:0:0:0:0:0:0:1') return true;
+    const normalized = normalizeIPv6(host);
+    // IPv6 loopback full form (both ::1 and zero-padded forms)
+    if (normalized === '0:0:0:0:0:0:0:1') return true;
 
-    // IPv4-mapped IPv6 — block all private ranges, including hex format
-    const V4MAPPED_PREFIX = '::ffff:';
-    if (lower.startsWith(V4MAPPED_PREFIX)) {
-      const v4part = lower.slice(V4MAPPED_PREFIX.length);
+    // Handle all forms of embedded IPv4 addresses for SSRF prevention:
+    // - IPv4-mapped IPv6 (::ffff:1.2.3.4 → 1.2.3.4)
+    // - Expanded forms (0:0:0:0:0:ffff:1.2.3.4)
+    // - IPv4-compatible (::1.2.3.4)
+    const v4Match = lower.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+    if (v4Match && net.isIPv4(v4Match[1])) {
+      return isBlockedTarget(v4Match[1]);
+    }
+
+    // Hex-encoded IPv4-mapped IPv6 (::ffff:7f00:1 → 127.0.0.1)
+    // This form doesn't contain dot-decimal so the regex above won't catch it.
+    // After normalization, even expanded forms like 0:0:0:0:0:ffff:7f00:1
+    // have the same prefix so they're caught here.
+    const V4MAPPED_PREFIX = '0:0:0:0:0:ffff:';
+    if (normalized.startsWith(V4MAPPED_PREFIX)) {
+      const v4part = normalized.slice(V4MAPPED_PREFIX.length);
       // Dot-decimal: ::ffff:127.0.0.1
       if (net.isIPv4(v4part)) {
         return isBlockedTarget(v4part);

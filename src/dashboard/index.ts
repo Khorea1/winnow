@@ -60,25 +60,31 @@ function isAuthorized(req: IncomingMessage) {
 function isSafeProxyFile(p: string, allowedDir: string): boolean {
   if (typeof p !== 'string' || !p) return false;
   if (p.includes('\0')) return false;
-  const abs = path.isAbsolute(p) ? p : path.resolve(allowedDir, p);
-  const dir = path.dirname(abs);
   try {
-    const realDir = fs.realpathSync(dir);
-    if (!realDir.startsWith(allowedDir + path.sep) && realDir !== allowedDir) return false;
+    const abs = path.isAbsolute(p) ? p : path.resolve(allowedDir, p);
+    // Resolve symlinks on the file itself, not just the directory — prevents
+    // path traversal via a symlink pointing outside the allowed directory.
+    const realFile = fs.realpathSync(abs);
+    const realAllowedDir = fs.realpathSync(allowedDir);
+    return realFile === realAllowedDir || realFile.startsWith(realAllowedDir + path.sep);
   } catch {
     return false;
   }
-  return true;
 }
 function sanitizeProxyKey(key: string): string {
   try {
     const u = new URL(key);
     u.username = '';
     u.password = '';
-    // URL class adds trailing slash, remove it
-    return u.toString().replace(/\/$/, '');
+    // URL class adds trailing slash, remove it; also strip protocol prefix for consistent comparison
+    return u
+      .toString()
+      .replace(/\/$/, '')
+      .replace(/^[a-z]+:\/\//, '');
   } catch {
-    return key;
+    // URL parsing failed — likely protocol-less string with credentials
+    // Strip user:password@ prefix if present
+    return key.replace(/^.*@/, '');
   }
 }
 
@@ -194,7 +200,7 @@ export function registerDashboard(
     try {
       const urlObj = new URL(req.url || '/', 'http://localhost');
       const pathname = urlObj.pathname;
-      const needsAuth = pathname.startsWith('/api/') || pathname === '/dashboard' || pathname === '/events';
+      const needsAuth = pathname.startsWith('/api/') || pathname === '/dashboard' || pathname === '/events' || pathname === '/__stats';
 
       if (needsAuth && !isAuthorized(req)) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
@@ -273,7 +279,7 @@ export function registerDashboard(
           }
           let removedFromHealth = false;
           for (const [raw] of health.entries()) {
-            if (sanitizeProxyKey(raw) === key) {
+            if (sanitizeProxyKey(raw) === sanitizeProxyKey(key)) {
               health.delete(raw);
               removedFromHealth = true;
             }
