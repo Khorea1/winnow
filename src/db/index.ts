@@ -1,6 +1,8 @@
 import Database, { type Database as DatabaseType, type Statement } from 'better-sqlite3';
 
 const SCHEMA = `
+-- Note: all timestamp columns (started, finished, banned_until, last_ok, frozen_until)
+-- store Unix epoch time in SECONDS (not milliseconds) for SQLite datetime function compatibility.
 CREATE TABLE IF NOT EXISTS proxy_health (
   proxy  TEXT NOT NULL,
   target TEXT NOT NULL DEFAULT '*',
@@ -40,6 +42,8 @@ export function initDb(dbPath: string): DatabaseType {
   const db = new Database(dbPath);
 
   db.pragma('journal_mode = WAL');
+  db.pragma('synchronous = NORMAL');
+  db.pragma('auto_vacuum = INCREMENTAL');
   db.pragma('wal_autocheckpoint = 500');
 
   // Schema versioning
@@ -120,13 +124,19 @@ export function loadHealth(db: DatabaseType): HealthRow[] {
 }
 
 export function removeProxyHealth(db: DatabaseType, proxy: string) {
-  getStmts(db).deleteHealth.run(proxy);
+  const result = getStmts(db).deleteHealth.run(proxy);
+  if (result.changes === 0) {
+    // Proxy may already have been removed — non-critical
+  }
 }
 
 export function createValidationRun(db: DatabaseType) {
-  return getStmts(db).insertRun.run(Date.now()).lastInsertRowid as number;
+  return getStmts(db).insertRun.run(Math.floor(Date.now() / 1000)).lastInsertRowid as number;
 }
 
 export function finishValidationRun(db: DatabaseType, id: number, total: number, passed: number, failed: number, exitCode: number) {
-  getStmts(db).finishRun.run(Date.now(), total, passed, failed, exitCode, id);
+  const result = getStmts(db).finishRun.run(Math.floor(Date.now() / 1000), total, passed, failed, exitCode, id);
+  if (result.changes === 0) {
+    // Validation run id not found — may indicate stale state
+  }
 }
