@@ -36,11 +36,7 @@ export class EventLog {
   }
 
   push(event: Omit<ProxyEvent, 'id' | 'ts'>): ProxyEvent {
-    const e: ProxyEvent = {
-      id: this.nextId++,
-      ts: Date.now(),
-      ...event,
-    };
+    const e: ProxyEvent = { ...event, id: this.nextId++, ts: Date.now() };
     this._buffer[this._head] = e;
     this._head = (this._head + 1) % this._max;
     if (this._size < this._max) {
@@ -80,13 +76,7 @@ export class EventLog {
   }
 
   get all(): ProxyEvent[] {
-    const result: ProxyEvent[] = [];
-    for (let i = 0; i < this._size; i++) {
-      const idx = (this._tail + i) % this._max;
-      const entry = this._buffer[idx];
-      if (entry) result.push(entry);
-    }
-    return result;
+    return this.recent(this._size);
   }
 
   clear(): void {
