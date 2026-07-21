@@ -122,10 +122,10 @@ function ensureString(value: unknown, def: string, validate?: (s: string) => boo
   const s = value.trim();
   return validate && !validate(s) ? def : s;
 }
+const VALID_MODES = new Set(['quick', 'standard', 'strict', 'stream', 'tcp-only']);
 function ensureMode(value: unknown, def: 'quick' | 'standard' | 'strict' | 'stream' | 'tcp-only'): 'quick' | 'standard' | 'strict' | 'stream' | 'tcp-only' {
   if (typeof value !== 'string') return def;
-  const modes = new Set(['quick', 'standard', 'strict', 'stream', 'tcp-only']);
-  return modes.has(value) ? (value as 'quick' | 'standard' | 'strict' | 'stream' | 'tcp-only') : def;
+  return VALID_MODES.has(value) ? (value as 'quick' | 'standard' | 'strict' | 'stream' | 'tcp-only') : def;
 }
 
 function sanitize(cfg: Record<string, unknown>): RotatorConfig {
@@ -137,7 +137,7 @@ function sanitize(cfg: Record<string, unknown>): RotatorConfig {
   c.validationBaseUrl = ensureString(c.validationBaseUrl, DEFAULTS.validationBaseUrl, (s) => {
     try {
       const u = new URL(s);
-      const host = u.hostname;
+      const host = u.hostname.replace(/^\[(.+)\]$/, '$1');
       if (isBlockedTarget(host)) return false;
       return true;
     } catch {
@@ -152,11 +152,7 @@ function sanitize(cfg: Record<string, unknown>): RotatorConfig {
   c.validationTtfbRatio = clampInt(c.validationTtfbRatio, 1, 100, DEFAULTS.validationTtfbRatio);
   c.validationMaxGap = clampInt(c.validationMaxGap, 0, 60000, DEFAULTS.validationMaxGap);
   c.validationTlsHost = ensureString(c.validationTlsHost, DEFAULTS.validationTlsHost, (s) => {
-    try {
-      return !isBlockedTarget(s);
-    } catch {
-      return false;
-    }
+    return !isBlockedTarget(s.replace(/^\[(.+)\]$/, '$1'));
   });
   c.validationTlsPort = clampInt(c.validationTlsPort, 1, 65535, DEFAULTS.validationTlsPort);
   c.maxFatalErrors = clampInt(c.maxFatalErrors, 1, 100, DEFAULTS.maxFatalErrors);
@@ -178,19 +174,46 @@ function sanitize(cfg: Record<string, unknown>): RotatorConfig {
         .filter((t): t is string => typeof t === 'string')
         .map((t: string) => t.trim())
         .filter(Boolean)
-        .filter((t) => {
-          // SSRF check
-          const lastColon = t.lastIndexOf(':');
-          const host = lastColon === -1 ? t : t.slice(0, lastColon);
-          if (isBlockedTarget(host)) {
-            console.warn(`[CONFIG] target ${t} is blocked, removing`);
-            return false;
+        .map((t) => {
+          // SSRF check with bracket-aware host:port parsing
+          let host: string;
+          let port: number | undefined;
+          if (t.startsWith('[')) {
+            const closeBracket = t.indexOf(']');
+            if (closeBracket !== -1) {
+              host = t.slice(0, closeBracket + 1);
+              const afterBracket = t.slice(closeBracket + 1);
+              if (afterBracket.startsWith(':')) {
+                port = parseInt(afterBracket.slice(1), 10);
+              }
+            } else {
+              host = t;
+            }
+          } else {
+            const lastColon = t.lastIndexOf(':');
+            if (lastColon === -1) {
+              host = t;
+            } else {
+              const candidatePort = parseInt(t.slice(lastColon + 1), 10);
+              if (Number.isFinite(candidatePort) && candidatePort > 0 && candidatePort <= 65535) {
+                host = t.slice(0, lastColon);
+                port = candidatePort;
+              } else {
+                host = t;
+              }
+            }
           }
-          return true;
+          const strippedHost = host.replace(/^\[(.+)\]$/, '$1');
+          if (isBlockedTarget(strippedHost)) {
+            console.warn(`[CONFIG] target ${t} is blocked, removing`);
+            return null;
+          }
+          return `${host}:${port ?? 443}`;
         })
+        .filter((t): t is string => t !== null)
     : [];
   c.targets = trimmedTargets.length ? trimmedTargets : DEFAULTS.targets;
-  c.upstreamIdleTimeout = clampNum(c.upstreamIdleTimeout, 0, 120000, 0);
+  c.upstreamIdleTimeout = clampNum(c.upstreamIdleTimeout, 0, 120000, DEFAULTS.upstreamIdleTimeout);
   c.proxyFile = ensureString(c.proxyFile, DEFAULTS.proxyFile, (s) => !s.includes('\0'));
   if (!path.isAbsolute(c.proxyFile)) c.proxyFile = path.resolve(resolveDataDir(), c.proxyFile);
   return c;
@@ -287,7 +310,7 @@ export function updateConfig(patch: Partial<RotatorConfig>, currentRuntime?: Par
     fs.renameSync(tmpFile, configPath);
   } catch (e) {
     console.warn('[CONFIG] failed to write config:', e instanceof Error ? e.message : String(e));
-    return (currentRuntime || current) as RotatorConfig;
+    return sanitize(currentRuntime || current);
   }
   return sanitized;
 }
