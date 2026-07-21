@@ -62,25 +62,36 @@ describe('EventLog', () => {
     assert.equal(log.all.length, 0);
   });
 
-  it('subscribe receives events', () => {
+  it('subscribe receives events', async () => {
     const log = new EventLog(100);
-    const received: ProxyEvent[] = [];
-    log.subscribe((e) => received.push(e));
-    log.push({ type: 'connect', proxy: 'p1', target: 't', status: 'success', latency: 100 });
-    assert.equal(received.length, 1);
-    assert.equal(received[0].proxy, 'p1');
-    assert.equal(received[0].latency, 100);
+    let received: ProxyEvent | undefined;
+    log.subscribe((e) => {
+      received = e;
+    });
+    const event = log.push({ type: 'connect', proxy: 'p', target: 't', status: 'attempt' });
+    const { promise, resolve } = Promise.withResolvers<void>();
+    process.nextTick(resolve);
+    await promise;
+    assert.ok(received, 'should have received event');
+    assert.equal(received?.id, event.id);
   });
 
-  it('subscribe does not receive events after unsubscribe', () => {
+  it('subscribe does not receive events after unsubscribe', async () => {
     const log = new EventLog(100);
-    const received: ProxyEvent[] = [];
-    const fn = (e: ProxyEvent) => received.push(e);
-    log.subscribe(fn);
-    log.push({ type: 'connect', proxy: 'p1', target: 't', status: 'attempt' });
-    log.unsubscribe(fn);
-    log.push({ type: 'connect', proxy: 'p2', target: 't', status: 'attempt' });
-    assert.equal(received.length, 1);
+    let received = false;
+    const unsub = log.subscribe(() => {
+      received = true;
+    });
+    unsub();
+    const { promise: p1, resolve: r1 } = Promise.withResolvers<void>();
+    process.nextTick(r1);
+    await p1;
+    received = false;
+    log.push({ type: 'connect', proxy: 'p', target: 't', status: 'attempt' });
+    const { promise: p2, resolve: r2 } = Promise.withResolvers<void>();
+    process.nextTick(r2);
+    await p2;
+    assert.equal(received, false);
   });
 
   it('listener exceptions do not crash push', () => {

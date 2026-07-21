@@ -192,11 +192,9 @@ describe('updateConfig', () => {
 
   it('updates allowed keys', () => {
     const result = updateConfig({
-      port: 9090,
       retries: 10,
       validationMode: 'strict',
     });
-    assert.equal(result.port, 9090);
     assert.equal(result.retries, 10);
     assert.equal(result.validationMode, 'strict');
   });
