@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import type Database from 'better-sqlite3';
 
-import { insertHealth, loadHealth, removeProxyHealth } from '../db/index.js';
+import { type HealthRowInput, insertHealth, loadHealth, removeProxyHealth } from '../db/index.js';
 import { EventLog } from '../events.js';
 import { createLogger } from '../logger.js';
 
@@ -57,8 +57,6 @@ export function classifyError(e: unknown): 'fatal' | 'transient' {
   const msg = String(err.message ?? '');
   if (msg) {
     if (FATAL_MSG_REGEX.test(msg)) return 'fatal';
-    // "TLS handshake timeout" is fatal; generic timeout alone is transient
-    if (/TLS.*timeout|handshake.*timeout/i.test(msg)) return 'fatal';
   }
   return 'transient';
 }
@@ -104,7 +102,7 @@ export function applySuccess(h: HealthEntry, latency: number, now: number) {
 export function ensureStarEntry(health: HealthStore, proxy: string): HealthEntry {
   let h = health.get(proxy);
   if (!h) {
-    h = { errors: 0, successes: 0, latency: 9999, bannedUntil: 0, lastOk: 0, fatalErrors: 0, frozenUntil: 0 };
+    h = blankEntry();
     health.set(proxy, h);
   }
   return h;
@@ -191,7 +189,6 @@ export class HealthStore extends EventEmitter {
   recordSuccess(proxy: string, target: string | undefined, latency: number, now = Date.now()) {
     const star = ensureStarEntry(this, proxy);
     applySuccess(star, latency, now);
-    this.dirty(proxy);
     if (target) {
       const te = this.getTarget(proxy, target);
       if (te) {
@@ -203,8 +200,10 @@ export class HealthStore extends EventEmitter {
         ne.latency = latency;
         ne.lastOk = now;
         this.setTarget(proxy, target, ne);
+        this.dirtyTarget(proxy, target);
       }
     }
+    this.dirty(proxy);
   }
 
   /**
@@ -222,7 +221,6 @@ export class HealthStore extends EventEmitter {
     const wasBanned = star.bannedUntil > now;
     const wasFrozen = star.frozenUntil > now;
     applyFailure(star, err, config, now);
-    this.dirty(proxy);
     if (target && target !== '*') {
       const te = this.getTarget(proxy, target);
       if (te) {
@@ -230,13 +228,14 @@ export class HealthStore extends EventEmitter {
         const _teWasFrozen = te.frozenUntil > now;
         applyFailure(te, err, config, now);
         this.dirtyTarget(proxy, target);
-        // target-level event logging handled by star-level below
       } else {
         const ne = blankEntry();
         applyFailure(ne, err, config, now);
         this.setTarget(proxy, target, ne);
+        this.dirtyTarget(proxy, target);
       }
     }
+    this.dirty(proxy);
     // LOG: emit ban/freeze events only on state transitions
     const errorClass = classifyError(err);
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -315,13 +314,11 @@ export class HealthStore extends EventEmitter {
     if (!byTarget) return false;
     const star = byTarget.get('*');
     if (!star) return false;
-    if (star.frozenUntil > 0 && now < star.frozenUntil) return false;
-    if (now < star.bannedUntil || star.errors >= maxErrors) return false;
+    if (now < star.bannedUntil) return false;
     if (target) {
       const te = byTarget.get(target);
       if (te) {
-        if (te.frozenUntil > 0 && now < te.frozenUntil) return false;
-        if (now < te.bannedUntil || te.errors >= maxErrors) return false;
+        if (now < te.bannedUntil) return false;
       }
     }
     return true;
@@ -357,7 +354,6 @@ export class HealthStore extends EventEmitter {
 
   static computeScore(e: HealthEntry, now = Date.now()): number {
     if (e.frozenUntil > 0 && now < e.frozenUntil) return Infinity;
-    if (now < e.bannedUntil) return Infinity;
     return e.latency + e.errors * 2000 + e.fatalErrors * 10000 - e.successes * 50;
   }
 
@@ -399,33 +395,42 @@ export class HealthStore extends EventEmitter {
       this._deleted = new Set(failed);
     }
     if (!this._dirty.size) return;
-    const rows: Record<string, unknown>[] = [];
-    for (const key of this._dirty) {
-      const sep = key.indexOf('\x00');
-      const proxy = key.slice(0, sep);
-      const target = key.slice(sep + 1);
-      const byTarget = this._data.get(proxy);
-      if (!byTarget) continue;
-      const h = byTarget.get(target);
-      if (!h) continue;
-      rows.push({
-        proxy,
-        target,
-        errors: h.errors,
-        successes: h.successes,
-        latency: h.latency,
-        bannedUntil: h.bannedUntil,
-        lastOk: h.lastOk,
-        fatalErrors: h.fatalErrors,
-        frozenUntil: h.frozenUntil,
-      });
+    const entries = [...this._dirty];
+    this._dirty.clear();
+    const BATCH_SIZE = 200;
+    const batches: string[][] = [];
+    for (let i = 0; i < entries.length; i += BATCH_SIZE) {
+      batches.push(entries.slice(i, i + BATCH_SIZE));
     }
-    if (rows.length) {
-      try {
-        insertHealth(this.db, rows);
-        this._dirty.clear();
-      } catch (e: unknown) {
-        logger.warn({ error: e instanceof Error ? e.message : String(e) }, 'flush error');
+    for (const batch of batches) {
+      const rows: HealthRowInput[] = [];
+      for (const key of batch) {
+        const sep = key.indexOf('\x00');
+        const proxy = key.slice(0, sep);
+        const target = key.slice(sep + 1);
+        const byTarget = this._data.get(proxy);
+        if (!byTarget) continue;
+        const h = byTarget.get(target);
+        if (!h) continue;
+        rows.push({
+          proxy,
+          target,
+          errors: h.errors,
+          successes: h.successes,
+          latency: h.latency,
+          bannedUntil: h.bannedUntil,
+          lastOk: h.lastOk,
+          fatalErrors: h.fatalErrors,
+          frozenUntil: h.frozenUntil,
+        });
+      }
+      if (rows.length) {
+        try {
+          insertHealth(this.db, rows);
+        } catch (e: unknown) {
+          logger.warn({ error: e instanceof Error ? e.message : String(e) }, 'flush error');
+          for (const key of batch) this._dirty.add(key);
+        }
       }
     }
   }
