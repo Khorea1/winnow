@@ -1,0 +1,22 @@
+  <!-- TOPBAR -->
+  <header class="topbar">
+    <div class="brand">
+      <h1>Winnow</h1>
+      <span class="tag" data-i18n="tagline">painel de operação</span>
+    </div>
+    <div class="status-row">
+      <span class="status-chip" id="sse-chip"><span class="dot down" id="sse-dot"></span><span id="sse-text" data-i18n="connecting">conectando…</span></span>
+      <span class="status-chip mono" id="live-clock">--:--:--</span>
+      <span class="status-chip busy" id="running-chip" style="display:none" data-i18n="validatingChip">validação em andamento</span>
+      <div class="topbar-controls">
+        <div class="lang-switch" id="lang-switch" role="group" aria-label="Language / Idioma">
+          <button class="lang-btn" data-lang="pt" type="button">PT</button>
+          <button class="lang-btn" data-lang="en" type="button">EN</button>
+        </div>
+        <button class="sidebar-toggle" id="sidebar-toggle" type="button" aria-label="Esconder painel de configuração" title="Esconder configurações">
+          <span class="icon" aria-hidden="true">▶</span>
+          <span class="icon-label" id="sidebar-toggle-label" data-i18n="sidebarHideLabel">Esconder</span>
+        </button>
+      </div>
+    </div>
+  </header>

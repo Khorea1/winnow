@@ -1,0 +1,39 @@
+      <!-- POOL TABLE CARD -->
+      <article class="card">
+        <header class="card-head">
+          <h2><span data-i18n="poolTitle">Pool de proxies</span> <span class="count" id="pool-count"></span></h2>
+          <div class="tools">
+            <div class="filter-chips" id="filter-chips" role="group" data-i18n-aria="filterAriaGroup" aria-label="Filtrar por estado">
+              <button class="filter-chip ok" data-status="ok" type="button"><span data-i18n="filterChipOk">ok</span> <span class="count" data-status="ok"></span></button>
+              <button class="filter-chip warn" data-status="warn" type="button"><span data-i18n="filterChipWarn">lento</span> <span class="count" data-status="warn"></span></button>
+              <button class="filter-chip err" data-status="err" type="button"><span data-i18n="filterChipErr">erro</span> <span class="count" data-status="err"></span></button>
+              <button class="filter-chip ban" data-status="ban" type="button"><span data-i18n="filterChipBan">banido</span> <span class="count" data-status="ban"></span></button>
+            </div>
+            <div class="search-wrap"><input id="proxy-filter" type="text" data-i18n-placeholder="filterPlaceholder" placeholder="filtrar (Ctrl+K)" spellcheck="false" data-i18n-aria="filterAriaInput" aria-label="Filtrar proxies"></div>
+            <button class="icon-btn" id="btn-copy-all" type="button" data-i18n-title="copyAllTitle" title="Copiar proxies filtrados" aria-label="Copiar proxies filtrados">⧉</button>
+          </div>
+        </header>
+        <div class="card-body">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th data-sort="status" tabindex="0" aria-sort="none"><span data-i18n="thStatus">Status</span> <span class="sort-arrow" aria-hidden="true"></span></th>
+                  <th data-sort="proxy" tabindex="0" aria-sort="none"><span data-i18n="thProxy">Proxy</span> <span class="sort-arrow" aria-hidden="true"></span></th>
+                  <th data-sort="score" tabindex="0" aria-sort="none"><span data-i18n="thScore">Score</span> <span class="sort-arrow" aria-hidden="true"></span></th>
+                  <th data-sort="latency" tabindex="0" aria-sort="none"><span data-i18n="thLatency">Latência</span> <span class="sort-arrow" aria-hidden="true"></span></th>
+                  <th data-sort="errors" tabindex="0" aria-sort="none"><span data-i18n="thErrors">Erros</span> <span class="sort-arrow" aria-hidden="true"></span></th>
+                  <th data-sort="ok" tabindex="0" aria-sort="none"><span data-i18n="thOk">OKs</span> <span class="sort-arrow" aria-hidden="true"></span></th>
+                  <th data-i18n="thBannedUntil">Banido até</th>
+                </tr>
+              </thead>
+              <tbody id="proxy-table"></tbody>
+            </table>
+          </div>
+          <div class="table-note" id="table-note"></div>
+        </div>
+        <div class="trend-wrap">
+          <svg id="trend-svg" viewBox="0 0 600 64" preserveAspectRatio="none"></svg>
+          <div class="trend-labels"><span data-i18n="trendLatency">latência média (ms)</span><span data-i18n="trendErrors">erros acumulados</span></div>
+        </div>
+      </article>

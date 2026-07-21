@@ -1,0 +1,46 @@
+
+      <!-- VALIDATOR CARD -->
+      <article class="card">
+        <header class="card-head"><h2 data-i18n="validatorTitle">Validador</h2><span class="status-chip mono" id="val-mode-pill">quick</span></header>
+        <div class="card-body pad">
+          <div class="field-row">
+            <div class="field"><label for="cfg-val-threads" data-i18n="threadsLabel">Threads</label><input type="number" id="cfg-val-threads" class="mono" min="1" max="100" value="20"><div class="hint" data-i18n="threadsHint">10–20 para proxies gratuitos</div></div>
+            <div class="field"><label for="cfg-val-mode" data-i18n="modeLabel">Modo</label>
+              <select id="cfg-val-mode" class="mono">
+                <option value="tcp-only" data-i18n="modeTcpOnly">tcp-only — só TCP</option>
+                <option value="quick" data-i18n="modeQuick">quick — só IP</option>
+                <option value="standard" data-i18n="modeStandard">standard — IP + stream</option>
+                <option value="strict" data-i18n="modeStrict">strict — completo</option>
+                <option value="stream" data-i18n="modeStream">stream — só streaming</option>
+              </select>
+            </div>
+          </div>
+          <div class="field"><label for="cfg-val-baseurl" data-i18n="baseUrlLabel">Base URL</label><input type="text" id="cfg-val-baseurl" class="mono" placeholder="http://httpbin.org"><div class="hint" data-i18n="baseUrlHint">endpoints http:// tendem a funcionar melhor com proxies http</div></div>
+          <div class="field-row">
+            <div class="field"><label for="cfg-val-maxlat" data-i18n="maxLatLabel">Latência máx. (ms)</label><input type="number" id="cfg-val-maxlat" class="mono" min="500" max="30000" value="7000"></div>
+            <div class="field"><label for="cfg-val-conntimeout" data-i18n="connTimeoutLabel">Timeout de conexão (s)</label><input type="number" id="cfg-val-conntimeout" class="mono" min="1" max="30" value="4"></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label for="cfg-val-throttle" data-i18n="throttleLabel">Throttle (ms)</label><input type="number" id="cfg-val-throttle" class="mono" min="0" max="5000" value="100"><div class="hint" data-i18n="throttleHint">jitter aleatório 0..N</div></div>
+            <div class="field"><label for="cfg-val-ttfb" data-i18n="ttfbLabel">Tolerância de TTFB (%)</label><input type="number" id="cfg-val-ttfb" class="mono" min="1" max="100" value="100"><div class="hint" data-i18n="ttfbHint">100 desativa a checagem</div></div>
+          </div>
+          <div class="field toggle-group">
+            <label class="toggle-row"><input type="checkbox" id="cfg-val-prune"><span data-i18n="pruneLabel">Remover inválidos do arquivo ao final</span></label>
+            <label class="toggle-row"><input type="checkbox" id="cfg-val-anon"><span data-i18n="anonLabel">Exigir anonimato (rejeita proxies transparentes)</span></label>
+            <label class="toggle-row"><input type="checkbox" id="cfg-val-insecure"><span data-i18n="insecureLabel">Ignorar certificado TLS inválido</span></label>
+          </div>
+          <div id="val-mode-desc" class="mode-desc"></div>
+          <div class="vstats">
+            <div class="cell"><div class="n val-total" id="vstat-total">0</div><div class="l" data-i18n="vstatTotal">total</div></div>
+            <div class="cell"><div class="n val-ok" id="vstat-ok">0</div><div class="l" data-i18n="vstatOk">válidos</div></div>
+            <div class="cell"><div class="n val-fail" id="vstat-fail">0</div><div class="l" data-i18n="vstatFail">inválidos</div></div>
+          </div>
+          <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+          <div id="val-status" class="val-status"></div>
+          <div class="action-row">
+            <button id="btn-validate" class="btn btn-primary btn-full" type="button" data-i18n="validateBtn">Validar agora</button>
+            <button id="btn-stop-validate" class="btn btn-danger" type="button" data-i18n="stopBtn">Parar</button>
+          </div>
+          <div id="validate-log" role="log" aria-live="polite" data-i18n-aria="validateLogAria" aria-label="Resultados da validação" data-empty-msg="Sem atividade ainda. Clique em Validar para iniciar."></div>
+        </div>
+      </article>

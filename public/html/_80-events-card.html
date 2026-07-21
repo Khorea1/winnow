@@ -1,0 +1,24 @@
+
+      <!-- EVENTS CARD -->
+      <article class="card">
+        <header class="card-head">
+          <h2 data-i18n="eventsTitle">Eventos de proxy</h2>
+          <div class="tools tools-compact">
+            <select id="evt-filter" data-i18n-aria="evtFilterAria" aria-label="Filtrar por tipo">
+              <option value="" data-i18n="evtFilterAll">todos</option>
+              <option value="connect">CONNECT</option>
+              <option value="http">HTTP</option>
+              <option value="healthcheck">healthcheck</option>
+              <option value="retry">retry</option>
+              <option value="ban">ban</option>
+              <option value="unban">unban</option>
+              <option value="freeze">freeze</option>
+              <option value="pool">pool</option>
+            </select>
+            <label class="toggle-row"><input type="checkbox" id="evt-autoscroll" checked><span class="toggle-label" data-i18n="autoscroll">autoscroll</span></label>
+            <button class="icon-btn" id="btn-clear-events" type="button" data-i18n-title="clearEventsTitle" title="Limpar eventos" aria-label="Limpar eventos">✕</button>
+          </div>
+        </header>
+        <div class="card-body"><div id="event-feed" role="log" aria-live="off" data-i18n-aria="eventFeedAria" aria-label="Eventos de proxy"><div class="log-empty" data-i18n="eventsWaiting">Aguardando eventos de conexão…</div></div></div>
+      </article>
+    </main>

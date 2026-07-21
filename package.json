@@ -6,8 +6,8 @@
   "description": "Proxy rotator with persistent health, multi-target scoring, dashboard and JS validator",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
-    "clean": "rm -rf dist",
+    "build:html": "node scripts/assemble-html.mjs",
+    "build": "npm run build:html && tsc",
     "start": "node dist/index.js",
     "validator": "node dist/validator/index.js",
     "dev": "tsx watch src/index.ts",

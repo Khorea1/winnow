@@ -18,6 +18,8 @@ import type { ProxyResult } from '../validator/types.js';
 const logger = createLogger('dashboard');
 
 const _DASHBOARD_PATH = path.join(import.meta.dirname, '../../public/dashboard.html');
+const _DASHBOARD_CSS_PATH = path.join(import.meta.dirname, '../../public/dashboard.css');
+const _DASHBOARD_JS_PATH = path.join(import.meta.dirname, '../../public/dashboard.js');
 let _unsubEventLog: (() => void) | undefined;
 let _healthHandler: ((data: unknown) => void) | undefined;
 let _unsubHealth: (() => void) | undefined;
@@ -184,11 +186,8 @@ function serveDashboard(res: ServerResponse) {
     res.writeHead(200, {
       'Content-Type': 'text/html; charset=utf-8',
       'X-Content-Type-Options': 'nosniff',
-      // NOTE: script-src 'unsafe-inline' reduces XSS protection. Dashboard is a
-      // single static HTML with inline scripts — switching to nonce/hash would
-      // require restructuring dashboard.html (out of scope for this change).
       'Content-Security-Policy':
-        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; base-uri 'self'",
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; base-uri 'self'",
     });
     res.end(_dashboardHtml);
   } catch (e: unknown) {
@@ -464,6 +463,38 @@ export function registerDashboard(
             res.end(JSON.stringify({ error: 'Validation failed to start' }));
           }
         });
+        return;
+      }
+
+      if (pathname === '/dashboard.css') {
+        try {
+          const css = fs.readFileSync(_DASHBOARD_CSS_PATH, 'utf8');
+          res.writeHead(200, {
+            'Content-Type': 'text/css; charset=utf-8',
+            'Cache-Control': 'no-cache',
+            'X-Content-Type-Options': 'nosniff',
+          });
+          res.end(css);
+        } catch {
+          res.writeHead(404);
+          res.end('/* not found */');
+        }
+        return;
+      }
+
+      if (pathname === '/dashboard.js') {
+        try {
+          const js = fs.readFileSync(_DASHBOARD_JS_PATH, 'utf8');
+          res.writeHead(200, {
+            'Content-Type': 'application/javascript; charset=utf-8',
+            'Cache-Control': 'no-cache',
+            'X-Content-Type-Options': 'nosniff',
+          });
+          res.end(js);
+        } catch {
+          res.writeHead(404);
+          res.end('// not found');
+        }
         return;
       }
 
