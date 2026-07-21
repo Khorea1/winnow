@@ -15,17 +15,27 @@ function shortId(): string {
 }
 
 // Hop-by-hop headers that MUST NOT be forwarded by an HTTP proxy (RFC 2616 §13.5.1).
-const HOP_BY_HOP = new Set([
-  'connection',
-  'keep-alive',
-  'proxy-authenticate',
-  'proxy-authorization',
-  'te',
-  'trailer',
-  'transfer-encoding',
-  'upgrade',
-  'proxy-connection',
-]);
+const HOP_BY_HOP: Record<string, true> = {
+  connection: true,
+  'keep-alive': true,
+  'proxy-authenticate': true,
+  'proxy-authorization': true,
+  te: true,
+  trailer: true,
+  'transfer-encoding': true,
+  upgrade: true,
+  'proxy-connection': true,
+};
+// Pre-built set for request-header stripping — avoids allocating a new array
+// on every iteration of every header on every request.
+const STRIPPED_REQUEST_HEADERS: Record<string, true> = {
+  host: true,
+  ...HOP_BY_HOP,
+};
+
+// Maximum acceptable size for upstream response headers (prevents unbounded
+// memory growth if the upstream sends data without a \r\n\r\n terminator).
+const MAX_RESPONSE_HEADER_BYTES = 32768;
 
 // ── Upstream timeout helpers ──────────────────────────────────────────────
 // TTFB + idle timeout for single-socket upstream or bi-directional CONNECT.
@@ -119,7 +129,6 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
       let bytesUp = 0;
       let bytesDown = 0;
       let failed = false;
-      let _closedEarly = false;
       const start = Date.now();
 
       try {
@@ -200,7 +209,6 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
         cancelTimeout?.();
         const elapsed = Date.now() - start;
         if (elapsed < 500 && bytesDown === 0 && bytesUp < 100) {
-          _closedEarly = true;
           EventLog.safePush(el, { type: 'connect', proxy: upstream.raw, target: targetKey, status: 'failure', error: 'early close', errorClass: 'transient' });
           markFailure(new Error('early close'));
         } else {
@@ -297,13 +305,13 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
 
       // Send request to upstream
       const pathAndQuery = targetUrl.pathname + targetUrl.search;
-      let headers = '';
+      let reqHeaderLines = '';
       for (const [k, v] of Object.entries(req.headers)) {
-        if (['host', ...HOP_BY_HOP].includes(k.toLowerCase())) continue;
-        if (Array.isArray(v)) headers += `${k}: ${v.join(', ')}\r\n`;
-        else if (v) headers += `${k}: ${v}\r\n`;
+        if (k.toLowerCase() in STRIPPED_REQUEST_HEADERS) continue;
+        if (Array.isArray(v)) reqHeaderLines += `${k}: ${v.join(', ')}\r\n`;
+        else if (v) reqHeaderLines += `${k}: ${v}\r\n`;
       }
-      const reqLine = `${req.method} ${pathAndQuery} HTTP/1.1\r\nHost: ${tHost}\r\n${headers}Connection: close\r\n\r\n`;
+      const reqLine = `${req.method} ${pathAndQuery} HTTP/1.1\r\nHost: ${tHost}\r\n${reqHeaderLines}Connection: close\r\n\r\n`;
       upSock.write(reqLine);
       cancelTimeout = startSocketTimeout([upSock], config.timeout, config.upstreamIdleTimeout || config.timeout * 2, () => {
         if (requestFailed) return;
@@ -313,7 +321,10 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
         EventLog.safePush(el, { type: 'http', proxy: upstream.raw, target: targetKey, status: 'failure', error: 'upstream timeout', errorClass: 'transient' });
         upSock.destroy();
         try {
-          res.end();
+          if (!res.writableEnded) {
+            if (!res.headersSent) res.writeHead(504, { 'Content-Type': 'text/plain' });
+            res.end('Gateway Timeout');
+          }
         } catch {}
       });
 
@@ -324,6 +335,7 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
           requestBodyBytes += chunk.length;
           bodyBytes += chunk.length;
           if (bodyBytes > MAX_BODY_BYTES && !requestFailed) {
+            cancelTimeout?.();
             req.unpipe(upSock);
             req.destroy();
             upSock.destroy();
@@ -341,8 +353,22 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
       let statusCode = 0;
 
       upSock.on('data', (chunk: Buffer) => {
+        if (requestFailed) return;
+
         if (!headerParsed) {
           const combined = respBuf.length > 0 ? Buffer.concat([respBuf, chunk]) : chunk;
+
+          if (combined.length > MAX_RESPONSE_HEADER_BYTES) {
+            cancelTimeout?.();
+            markHttpFailure(new Error('upstream response header too large'));
+            try {
+              if (!res.headersSent) res.writeHead(502, { 'Content-Type': 'text/plain' });
+              res.end('Bad Gateway');
+            } catch {}
+            upSock.destroy();
+            return;
+          }
+
           const idx = combined.indexOf('\r\n\r\n');
           if (idx !== -1) {
             let headerStr = combined.slice(0, idx).toString();
@@ -381,24 +407,24 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
               });
               markHttpFailure(new Error(`upstream ${statusCode}`));
             }
-            const headers: Record<string, string | string[]> = {};
+            const respHeaders: Record<string, string | string[]> = {};
             for (let i = 1; i < lines.length; i++) {
               const line = lines[i];
               const sep = line.indexOf(':');
               if (sep === -1) continue;
               const k = line.slice(0, sep).trim();
               const v = line.slice(sep + 1).trim();
-              if (k && !HOP_BY_HOP.has(k.toLowerCase())) {
-                const existing = headers[k];
+              if (k && !(k.toLowerCase() in HOP_BY_HOP)) {
+                const existing = respHeaders[k];
                 if (existing !== undefined) {
-                  headers[k] = Array.isArray(existing) ? [...existing, v] : [existing, v];
+                  respHeaders[k] = Array.isArray(existing) ? [...existing, v] : [existing, v];
                 } else {
-                  headers[k] = v;
+                  respHeaders[k] = v;
                 }
               }
             }
             try {
-              res.writeHead(statusCode, headers);
+              res.writeHead(statusCode, respHeaders);
               headerParsed = true;
               respBuf = Buffer.alloc(0);
               if (rest.length) {
@@ -427,16 +453,19 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
       upSock.on('end', () => {
         cancelTimeout?.();
         const totalTime = Date.now() - startTime;
-        if (!requestFailed) {
+        if (!requestFailed && headerParsed) {
           ctx.health.recordSuccess(upstream.raw, targetKey, dialLatency, Date.now());
           ctx.onRequestMetrics?.({ proxy: upstream.raw, target: targetKey, success: true, latency: totalTime, bytes: upstreamBytes + requestBodyBytes });
           logger.info(
             { reqId, proxy: upstream.raw, target: targetKey, statusCode, bytes: upstreamBytes + requestBodyBytes, latency: totalTime },
             'http request completed',
           );
+        } else if (!requestFailed && !headerParsed) {
+          markHttpFailure(new Error('upstream closed before response'));
+          ctx.onRequestMetrics?.({ proxy: upstream.raw, target: targetKey, success: false, latency: totalTime, bytes: upstreamBytes + requestBodyBytes });
         }
         try {
-          res.end();
+          if (!res.writableEnded) res.end();
         } catch {}
       });
 
@@ -444,8 +473,8 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
         cancelTimeout?.();
         const totalTime = Date.now() - startTime;
         try {
-          res.writeHead(502);
-          res.end('Bad Gateway');
+          if (!res.headersSent) res.writeHead(502);
+          if (!res.writableEnded) res.end('Bad Gateway');
         } catch {}
         if (!requestFailed) {
           markHttpFailure(err);
@@ -453,11 +482,13 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
         }
       });
       req.on('error', () => {
+        cancelTimeout?.();
         try {
           upSock.destroy();
         } catch {}
       });
       res.on('close', () => {
+        cancelTimeout?.();
         try {
           upSock.destroy();
         } catch {}

@@ -483,7 +483,7 @@ async function startValidation(
   broadcast(ctx.sseClients, 'validation:start', { jobId: runId, mode: opts.mode, threads: opts.threads });
 
   try {
-    const content = fs.readFileSync(proxyFile, 'utf8');
+    const content = await fs.promises.readFile(proxyFile, 'utf8');
     const proxies = content
       .split('\n')
       .map((l: string) => l.trim())
