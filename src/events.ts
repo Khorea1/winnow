@@ -14,13 +14,17 @@ export interface ProxyEvent {
 }
 
 export class EventLog {
-  private events: ProxyEvent[] = [];
+  private _buffer: (ProxyEvent | undefined)[];
+  private _head = 0;
+  private _tail = 0;
+  private _size = 0;
+  private _max: number;
   private nextId = 1;
-  private maxSize: number;
   private listeners: Set<(e: ProxyEvent) => void> = new Set();
 
   constructor(maxSize = 2000) {
-    this.maxSize = maxSize;
+    this._max = maxSize;
+    this._buffer = new Array(maxSize);
   }
 
   subscribe(fn: (e: ProxyEvent) => void) {
@@ -36,9 +40,12 @@ export class EventLog {
       ts: Date.now(),
       ...event,
     };
-    this.events.push(e);
-    if (this.events.length > this.maxSize) {
-      this.events.shift();
+    this._buffer[this._head] = e;
+    this._head = (this._head + 1) % this._max;
+    if (this._size < this._max) {
+      this._size++;
+    } else {
+      this._tail = (this._tail + 1) % this._max;
     }
     // Notify listeners — failures must never crash the app
     for (const fn of this.listeners) {
@@ -60,15 +67,31 @@ export class EventLog {
   }
 
   recent(limit?: number): ProxyEvent[] {
-    if (limit === undefined || limit >= this.events.length) return this.events.slice();
-    return this.events.slice(-limit);
+    const count = Math.min(limit ?? this._size, this._size);
+    const result: ProxyEvent[] = [];
+    const start = this._size > count ? (this._tail + (this._size - count)) % this._max : this._tail;
+    for (let i = 0; i < count; i++) {
+      const idx = (start + i) % this._max;
+      const entry = this._buffer[idx];
+      if (entry) result.push(entry);
+    }
+    return result;
   }
 
   get all(): ProxyEvent[] {
-    return this.events.slice();
+    const result: ProxyEvent[] = [];
+    for (let i = 0; i < this._size; i++) {
+      const idx = (this._tail + i) % this._max;
+      const entry = this._buffer[idx];
+      if (entry) result.push(entry);
+    }
+    return result;
   }
 
   clear(): void {
-    this.events = [];
+    this._buffer = new Array(this._max);
+    this._head = 0;
+    this._tail = 0;
+    this._size = 0;
   }
 }

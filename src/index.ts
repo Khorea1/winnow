@@ -59,7 +59,7 @@ const config = loadConfig();
 
 // Apply CLI overrides to config (only when the flag was actually passed)
 if (cliPort !== undefined) config.port = cliPort;
-if (cliProxyFile !== undefined) config.proxyFile = cliProxyFile;
+if (cliProxyFile !== undefined) config.proxyFile = path.resolve(cliProxyFile);
 if (cliTimeout !== undefined) config.timeout = cliTimeout;
 
 const validModes = ['quick', 'standard', 'strict', 'stream', 'tcp-only'];
@@ -74,7 +74,8 @@ if (cliValidationMode !== undefined) {
 }
 
 // Derive DB path from proxy file path
-const dbPath = `${path.resolve(config.proxyFile).replace(/\.[^.]+$/, '')}.db`;
+const parsed = path.parse(path.resolve(config.proxyFile));
+const dbPath = path.join(parsed.dir, `${parsed.name}.db`);
 
 // Initialize database
 const db = initDb(dbPath);

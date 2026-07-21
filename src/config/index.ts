@@ -192,12 +192,12 @@ export function loadConfig(): RotatorConfig {
   }
   if (process.env.PROXY_FILE?.trim()) cfg.proxyFile = process.env.PROXY_FILE;
   if (process.env.WINNOW_PROXY_FILE?.trim()) cfg.proxyFile = process.env.WINNOW_PROXY_FILE;
-  if (process.env.PORT) cfg.port = parseInt(process.env.PORT, 10);
-  if (process.env.WINNOW_PORT) cfg.port = parseInt(process.env.WINNOW_PORT, 10);
+  if (process.env.PORT?.trim()) cfg.port = parseInt(process.env.PORT.trim(), 10);
+  if (process.env.WINNOW_PORT?.trim()) cfg.port = parseInt(process.env.WINNOW_PORT.trim(), 10);
   return sanitize(cfg);
 }
 
-export function updateConfig(patch: Partial<RotatorConfig>): RotatorConfig {
+export function updateConfig(patch: Partial<RotatorConfig>, currentRuntime?: Partial<RotatorConfig>): RotatorConfig {
   const configPath = getConfigPath();
   let current: Record<string, unknown> = {};
   try {
@@ -207,6 +207,15 @@ export function updateConfig(patch: Partial<RotatorConfig>): RotatorConfig {
     }
   } catch {
     /* vazio abaixo é tratado por sanitize */
+  }
+  // Apply runtime values (CLI overrides) as base before patch
+  if (currentRuntime) {
+    for (const k of API_ALLOWED_KEYS) {
+      const rv = (currentRuntime as Record<string, unknown>)[k];
+      if (rv !== undefined && (current as Record<string, unknown>)[k] === undefined) {
+        current[k] = rv;
+      }
+    }
   }
   for (const k of API_ALLOWED_KEYS) {
     if ((patch as Record<string, unknown>)[k] !== undefined) current[k] = (patch as Record<string, unknown>)[k];

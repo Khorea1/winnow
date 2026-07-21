@@ -36,7 +36,7 @@ export type HealthRow = {
   frozen_until: number;
 };
 
-export function initDb(dbPath: string) {
+export function initDb(dbPath: string): DatabaseType {
   const db = new Database(dbPath);
 
   // Create tables (new databases only — IF NOT EXISTS means existing ones are untouched)
@@ -45,10 +45,14 @@ export function initDb(dbPath: string) {
   // Migration: add frozen_until to proxy_health (v4.0.0)
   try {
     db.exec('ALTER TABLE proxy_health ADD COLUMN frozen_until INTEGER NOT NULL DEFAULT 0');
-  } catch {
-    // column already exists — noop
+  } catch (e: unknown) {
+    // Column already exists is normal on subsequent startups
+    // Re-throw other errors (disk full, permission, corruption)
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!msg.includes('duplicate column') && !msg.includes('already exists')) {
+      throw e;
+    }
   }
-
   db.pragma('journal_mode = WAL');
   return db;
 }
@@ -86,8 +90,20 @@ function getStmts(db: DatabaseType): StmtCache {
   return s;
 }
 
-export function insertHealth(db: DatabaseType, rows: Record<string, unknown>[]) {
-  const tx = db.transaction((rows: Record<string, unknown>[]) => {
+export interface HealthRowInput {
+  proxy: string;
+  target: string;
+  errors: number;
+  successes: number;
+  latency: number;
+  bannedUntil: number;
+  lastOk: number;
+  fatalErrors: number;
+  frozenUntil: number;
+}
+
+export function insertHealth(db: DatabaseType, rows: HealthRowInput[]) {
+  const tx = db.transaction((rows: HealthRowInput[]) => {
     const { upsertHealth } = getStmts(db);
     for (const r of rows) upsertHealth.run(r);
   });
