@@ -15,6 +15,10 @@ export function parseLine(line: string): ParsedProxy | null {
   try {
     const u = new URL(line);
     if (!['http:', 'https:', 'socks5:', 'socks:'].includes(u.protocol)) return null;
+    if (u.protocol === 'https:') {
+      // https:// proxy URLs require TLS to the proxy itself — not supported
+      return null;
+    }
     return { raw: original, url: u, proto: u.protocol.replace(':', '') };
   } catch {
     return null;
@@ -35,6 +39,7 @@ export function parseHostPort(input: string, defaultPort = 443): { host: string;
       const port = parseInt(rest.slice(1), 10);
       return { host, port: Number.isFinite(port) ? port : defaultPort };
     }
+    if (rest && !rest.startsWith(':')) return null;
     return { host, port: defaultPort };
   }
   // Bare IPv6 literal without brackets (e.g. `::1`). Must check before
@@ -183,7 +188,8 @@ function socks5AddrBuffer(tHost: string, tPort: number): Buffer {
     const after = gapIdx === -1 ? [] : parts.slice(gapIdx + 1).filter((s) => s !== '');
     // Count IPv4 dot-decimal segments as 2 slots each
     const afterSlotCount = after.reduce((sum, seg) => sum + (seg.includes('.') ? 2 : 1), 0);
-    const zerosNeeded = 8 - before.length - afterSlotCount;
+    const beforeSlotCount = before.reduce((sum, seg) => sum + (seg.includes('.') ? 2 : 1), 0);
+    const zerosNeeded = 8 - beforeSlotCount - afterSlotCount;
     const bytes: number[] = [];
     for (const seg of before) {
       if (seg.includes('.')) {
@@ -375,7 +381,7 @@ export async function dial(upstream: ParsedProxy, h: string, p: number, timeout:
   if (await isBlockedAfterDns(h)) {
     throw new Error(`target blocked by SSRF rules: ${h}`);
   }
-  if (upstream.proto === 'socks5') return socks5Connect(upstream, h, p, timeout);
+  if (upstream.proto === 'socks5' || upstream.proto === 'socks') return socks5Connect(upstream, h, p, timeout);
   if (upstream.proto === 'socks4' || upstream.proto === 'socks4a') throw new Error('SOCKS4 not supported');
   return httpConnect(upstream, h, p, timeout);
 }

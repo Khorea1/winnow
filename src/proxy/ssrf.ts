@@ -1,6 +1,8 @@
 import dns from 'node:dns';
-
 import net from 'node:net';
+import { createLogger } from '../logger.js';
+
+const logger = createLogger('ssrf');
 
 // ── SSRF prevention ─────────────────────────────────────────────────────────
 // Blocked ranges for proxy CONNECT/HTTP targets:
@@ -134,7 +136,7 @@ export async function isBlockedAfterDns(host: string): Promise<boolean> {
     }
     return false;
   } catch {
-    // DNS failure or timeout — let connection proceed (will fail naturally if host is unreachable)
+    logger.warn({ host }, 'SSRF DNS check failed, allowing through');
     return false;
   }
 }

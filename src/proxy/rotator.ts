@@ -118,7 +118,7 @@ export async function healthCheckTick(proxies: ParsedProxy[], health: HealthStor
               const errMsg = `TLS unauthorized: ${tlsRes.authorizationError}`;
               EventLog.safePush(eventLog, { type: 'healthcheck', proxy: p.raw, target, status: 'failure', error: errMsg, errorClass: 'transient' });
               logger.warn({ proxy: p.raw, target, error: errMsg }, 'health check TLS failure (non-strict)');
-              health.recordFailure(p.raw, target, new Error('upstream error'), config, Date.now());
+              health.recordFailure(p.raw, target, new Error(errMsg), config, Date.now());
               return; // skip success path
             }
             sock.destroy();
