@@ -13,6 +13,8 @@ import { buildOptionsFromConfig } from '../validator/index.js';
 import { runValidation } from '../validator/runner.js';
 import type { ProxyResult } from '../validator/types.js';
 
+let _lastRunId: number | null = null; // Track last run ID for abort fallback broadcast
+
 let _validationRunning = false;
 const logger = createLogger('dashboard');
 let _abortController: AbortController | null = null;
@@ -46,11 +48,7 @@ function isAuthorized(req: IncomingMessage) {
   if (!token) {
     // In production, fail-closed: block API routes when no token is configured.
     // This prevents accidental exposure of the dashboard API on a public port.
-    if (process.env.NODE_ENV === 'production') {
-      const urlObj = new URL(req.url || '/', 'http://localhost');
-      if (urlObj.pathname.startsWith('/api/')) return false;
-    }
-    return true;
+    return false; // Production without token: block all dashboard/API/events access
   }
   const auth = req.headers.authorization || '';
   if (auth === `Bearer ${token}`) return true;
@@ -118,6 +116,9 @@ function readBody(req: IncomingMessage, res: ServerResponse): Promise<string | n
     const body = Buffer.concat(chunks).toString('utf8');
     resolve(body);
   });
+  // Prevent hanging promise if the client disconnects mid-request
+  req.on('error', () => resolve(null));
+  req.on('close', () => resolve(null));
   return promise;
 }
 
@@ -151,8 +152,13 @@ function serveDashboard(res: ServerResponse) {
 function broadcast(clients: Set<ServerResponse>, event: string, data: unknown) {
   const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
   const dead: ServerResponse[] = [];
+  const MAX_BUFFER = 64 * 1024; // 64KB per client
   for (const res of clients) {
     try {
+      if (res.writableLength > MAX_BUFFER) {
+        dead.push(res);
+        continue;
+      }
       res.write(msg);
     } catch {
       dead.push(res);
@@ -305,13 +311,13 @@ export function registerDashboard(
           res.end(JSON.stringify({ error: 'Too many SSE clients' }));
           return;
         }
+        const corsOrigin = process.env.WINNOW_CORS_ORIGIN;
         res.writeHead(200, {
           'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache',
           Connection: 'keep-alive',
-          'Access-Control-Allow-Origin': process.env.WINNOW_CORS_ORIGIN || 'none',
+          ...(corsOrigin ? { 'Access-Control-Allow-Origin': corsOrigin } : {}),
         });
-        res.write('event: connected\ndata: {}\n\n');
         sseClients.add(res);
         const cleanup = () => {
           sseClients.delete(res);
@@ -375,13 +381,6 @@ export function registerDashboard(
           _abortController.abort();
           broadcast(sseClients, 'validation:stopping', { stopping: true });
           respondJson(res, { stopped: true });
-          setTimeout(() => {
-            if (_validationRunning) {
-              _validationRunning = false;
-              _abortController = null;
-              broadcast(sseClients, 'validation:complete', { stopped: true, exitCode: 130 });
-            }
-          }, 2000);
         } else {
           respondJson(res, { stopped: false, reason: 'not running' });
         }
@@ -421,13 +420,8 @@ export function registerDashboard(
           listener(req, res);
         } catch (err) {
           logger.error({ error: err instanceof Error ? err.message : String(err) }, 'original request listener error');
-          if (!res.headersSent) {
-            try {
-              res.writeHead(500, { 'Content-Type': 'text/plain' });
-              res.end('Internal Server Error');
-            } catch {}
-          }
-          break;
+          // Don't break — let remaining listeners execute
+          // Don't send a 500 — the failed listener may have already written headers
         }
       }
     } catch (e: unknown) {
@@ -487,6 +481,7 @@ async function startValidation(
   });
 
   const runId = createValidationRun(ctx.db);
+  _lastRunId = runId;
   _validationRunning = true;
   _abortController = new AbortController();
 
