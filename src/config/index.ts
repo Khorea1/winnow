@@ -80,8 +80,8 @@ const DEFAULTS: RotatorConfig = {
 };
 
 const API_ALLOWED_KEYS = new Set<keyof RotatorConfig>([
-  'port',
-  'proxyFile',
+  // 'port',         // REMOVED — not hot-reloadable
+  // 'proxyFile',    // REMOVED — not hot-reloadable
   'retries',
   'maxErrors',
   'timeout',
@@ -235,8 +235,22 @@ export function loadConfig(): RotatorConfig {
     const winnowProxyFile = process.env.WINNOW_PROXY_FILE?.trim();
     if (winnowProxyFile) cfg.proxyFile = winnowProxyFile;
   }
-  if (process.env.PORT?.trim()) cfg.port = parseInt(process.env.PORT.trim(), 10);
-  if (process.env.WINNOW_PORT?.trim()) cfg.port = parseInt(process.env.WINNOW_PORT.trim(), 10);
+  if (process.env.PORT?.trim()) {
+    const port = Number(process.env.PORT.trim());
+    if (Number.isFinite(port) && port >= 1 && port <= 65535) {
+      cfg.port = port;
+    } else {
+      console.warn(`Invalid PORT env value "${process.env.PORT}", using default`);
+    }
+  }
+  if (process.env.WINNOW_PORT?.trim()) {
+    const port = Number(process.env.WINNOW_PORT.trim());
+    if (Number.isFinite(port) && port >= 1 && port <= 65535) {
+      cfg.port = port;
+    } else {
+      console.warn(`Invalid WINNOW_PORT env value "${process.env.WINNOW_PORT}", using default`);
+    }
+  }
   return sanitize(cfg);
 }
 
