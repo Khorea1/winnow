@@ -98,7 +98,7 @@ export function httpConnect(upstream: ParsedProxy, tHost: string, tPort: number,
       }
     }, timeout);
     sock.on('connect', async () => {
-      if (tHost.includes('\r') || tHost.includes('\n')) {
+      if (tHost.includes('\r') || tHost.includes('\n') || tHost.includes('\x00')) {
         done = true;
         clearTimeout(to);
         sock.destroy();
@@ -192,21 +192,23 @@ function socks5AddrBuffer(tHost: string, tPort: number): Buffer {
     const zerosNeeded = 8 - beforeSlotCount - afterSlotCount;
     const bytes: number[] = [];
     for (const seg of before) {
-      if (seg.includes('.')) {
-        const octets = seg.split('.').map(Number);
+      const cleanSeg = seg.split('%')[0];
+      if (cleanSeg.includes('.')) {
+        const octets = cleanSeg.split('.').map(Number);
         bytes.push(octets[0], octets[1], octets[2], octets[3]);
       } else {
-        const n = parseInt(seg || '0', 16);
+        const n = parseInt(cleanSeg || '0', 16);
         bytes.push((n >> 8) & 0xff, n & 0xff);
       }
     }
     for (let i = 0; i < zerosNeeded; i++) bytes.push(0, 0);
     for (const seg of after) {
-      if (seg.includes('.')) {
-        const octets = seg.split('.').map(Number);
+      const cleanSeg = seg.split('%')[0];
+      if (cleanSeg.includes('.')) {
+        const octets = cleanSeg.split('.').map(Number);
         bytes.push(octets[0], octets[1], octets[2], octets[3]);
       } else {
-        const n = parseInt(seg || '0', 16);
+        const n = parseInt(cleanSeg || '0', 16);
         bytes.push((n >> 8) & 0xff, n & 0xff);
       }
     }
