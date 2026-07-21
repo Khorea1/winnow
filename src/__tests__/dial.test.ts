@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { isBlockedTarget, parseHostPort, parseLine } from '../proxy/dial.js';
+import { parseHostPort, parseLine } from '../proxy/dial.js';
+import { isBlockedTarget } from '../proxy/ssrf.js';
 
 describe('parseHostPort', () => {
   it('parses host:port', () => {
