@@ -1354,6 +1354,7 @@ function connectSSE(){
   addSSEListeners(ev);
   addEventFeedSSE(ev);
   ev.onerror = function(){
+    ev.close();  // Close the old EventSource first
     log(t('connLostLog'), 'fail');
     if (dot) dot.className = 'dot down';
     if (txt) txt.textContent = t('reconnecting');
@@ -1363,16 +1364,23 @@ function connectSSE(){
 
 /* ---------- event feed (proxy:event) ---------- */
 let eventFilter = '';
+let lastRenderedEventId = 0;
 
 // Fetch initial events
 async function loadInitialEvents() {
   try {
-    const { events } = await fetchJSON('/api/events/log?limit=50');
-    if (Array.isArray(events)) events.forEach(renderEventLine);
+    const res = await fetch('/api/events');
+    const events = await res.json();
+    for (const e of events) {
+      renderEventLine(e);
+      if (e.id > lastRenderedEventId) lastRenderedEventId = e.id;
+    }
   } catch {}
 }
 
 function renderEventLine(e) {
+  if (e.id <= lastRenderedEventId) return;
+  lastRenderedEventId = e.id;
   const container = document.getElementById('event-feed');
   const empty = container.querySelector('.log-empty');
   if (empty) empty.remove();
