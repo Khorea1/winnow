@@ -1,4 +1,7 @@
-import { dial, isBlockedTarget, parseLine } from '../../proxy/dial.js';
+import type net from 'node:net';
+import tls from 'node:tls';
+import { dial, parseLine } from '../../proxy/dial.js';
+import { isBlockedTarget } from '../../proxy/ssrf.js';
 
 export interface StreamResult {
   chunks: number;
@@ -17,6 +20,7 @@ export async function streamingCheck(
     expectedChunks: number;
     ttfbRatio: number;
     maxGap: number;
+    insecure: boolean;
   },
 ): Promise<StreamResult> {
   const parsedProxy = parseLine(proxyRaw);
@@ -31,7 +35,15 @@ export async function streamingCheck(
   const tPort = parseInt(u.port, 10) || (u.protocol === 'https:' ? 443 : 80);
   const pathAndQuery = u.pathname + u.search || '/';
 
-  const { sock } = await dial(parsedProxy, tHost, tPort, opts.connectTimeout * 1000);
+  const { sock: rawSock } = await dial(parsedProxy, tHost, tPort, opts.connectTimeout * 1000);
+  let sock: net.Socket | tls.TLSSocket = rawSock as net.Socket;
+  if (u.protocol === 'https:') {
+    sock = tls.connect({ socket: rawSock as net.Socket, servername: tHost, rejectUnauthorized: !opts.insecure });
+    await new Promise<void>((resolve, reject) => {
+      sock.once('connect', () => resolve());
+      sock.once('error', reject);
+    });
+  }
 
   return new Promise((resolve, reject) => {
     let done = false;
@@ -55,6 +67,7 @@ export async function streamingCheck(
     }, opts.maxTime * 1000);
 
     sock.on('data', (d: Buffer) => {
+      if (done) return;
       const now = Date.now();
       if (firstByte === 0) firstByte = now;
       if (headersEnd === -1) {

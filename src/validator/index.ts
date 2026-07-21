@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../config/index.js';
 import { createLogger } from '../logger.js';
@@ -31,9 +32,13 @@ interface ValidationConfigFragment {
 export function buildOptionsFromConfig(config: ValidationConfigFragment, overrides: Partial<ValidatorOptions> = {}): ValidatorOptions {
   const validModes = ['quick', 'standard', 'strict', 'stream', 'tcp-only'] as const;
   type ValidMode = (typeof validModes)[number];
+  const configMode = config.validationMode && validModes.includes(config.validationMode as ValidMode) ? (config.validationMode as ValidMode) : undefined;
+  if (!configMode && config.validationMode) {
+    logger.warn({ mode: config.validationMode }, 'invalid validationMode, falling back to quick');
+  }
   return {
     threads: overrides.threads ?? config.validationThreads ?? 20,
-    mode: overrides.mode && validModes.includes(overrides.mode as ValidMode) ? (overrides.mode as ValidMode) : (config.validationMode ?? 'quick'),
+    mode: overrides.mode && validModes.includes(overrides.mode as ValidMode) ? (overrides.mode as ValidMode) : (configMode ?? 'quick'),
     baseUrl: overrides.baseUrl ?? config.validationBaseUrl ?? 'http://httpbin.org',
     connectTimeout: overrides.connectTimeout ?? config.validationConnectTimeout ?? 4,
     maxLatency: overrides.maxLatency ?? config.validationMaxLatency ?? 7000,
@@ -51,15 +56,14 @@ export function buildOptionsFromConfig(config: ValidationConfigFragment, overrid
 export async function validateFile(filePath: string, opts: ValidatorOptions, onProgress?: ProgressCallback, abortSignal?: AbortSignal) {
   if (!fs.existsSync(filePath)) throw new Error(`File not found: ${filePath}`);
   const stat = fs.statSync(filePath);
-  if (stat.size > 100 * 1024 * 1024) throw new Error('File too large');
-  const content = fs.readFileSync(filePath, 'utf8');
-  const proxies = content
-    .split('\n')
-    .map((l) => l.trim())
-    .filter(Boolean)
-    .filter((l) => !l.startsWith('#'));
-  // dedup
-  const uniq = Array.from(new Set(proxies));
+  if (stat.size > 10 * 1024 * 1024) throw new Error('File too large');
+  const uniqSet = new Set<string>();
+  const rl = readline.createInterface({ input: fs.createReadStream(filePath, 'utf8'), crlfDelay: Infinity });
+  for await (const line of rl) {
+    const trimmed = line.trim();
+    if (trimmed && !trimmed.startsWith('#')) uniqSet.add(trimmed);
+  }
+  const uniq = Array.from(uniqSet);
 
   const result = await runValidation(uniq, opts, onProgress, abortSignal);
 

@@ -43,7 +43,7 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
   }
 
   try {
-    await tcpCheck(tcpInfo.host, tcpInfo.port, opts.connectTimeout * 1000);
+    await withAbort(tcpCheck(tcpInfo.host, tcpInfo.port, opts.connectTimeout * 1000), abortSignal);
   } catch {
     return fail(trimmed, 'tcp', 'TCP unreachable', { httpCode: 0 });
   }
@@ -131,6 +131,7 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
           expectedChunks: 5,
           ttfbRatio: opts.ttfbRatio,
           maxGap: opts.maxGap,
+          insecure: opts.insecure,
         }),
         abortSignal,
       );
@@ -156,6 +157,7 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
           expectedChunks: 20,
           ttfbRatio: opts.ttfbRatio,
           maxGap: opts.maxGap,
+          insecure: opts.insecure,
         }),
         abortSignal,
       );
@@ -202,7 +204,7 @@ export async function runValidation(
 
         try {
           let res = await validateSingleProxy(proxy, opts, abortSignal);
-          const sanitizedProxy = res.proxy.replace(/\/\/.*@/, '//***:***@');
+          const sanitizedProxy = res.proxy.replace(/\/\/[^@]*@/, '//***:***@');
           res = { ...res, proxy: sanitizedProxy };
           results.push(res);
           if (res.valid) valid.push(res.proxy);
@@ -224,12 +226,12 @@ export async function runValidation(
           );
         } catch (e: unknown) {
           const errMsg = e instanceof Error ? e.message : String(e);
-          const r: ProxyResult = { proxy, valid: false, error: errMsg, stage: 'unknown' };
+          const sanitizedProxy = proxy.replace(/\/\/[^@]*@/, '//***:***@');
+          const r: ProxyResult = { proxy: sanitizedProxy, valid: false, error: errMsg, stage: 'unknown' };
           results.push(r);
-          invalid.push({ proxy, reason: r.error! });
+          invalid.push({ proxy: sanitizedProxy, reason: r.error! });
           done++;
           onProgress?.(r, { total, done, valid: valid.length, invalid: invalid.length });
-          const sanitizedProxy = r.proxy.replace(/\/\/.*@/, '//***:***@');
           logger.debug(
             { proxy: sanitizedProxy, valid: false, stage: r.stage, error: r.error, done, total, validCount: valid.length, invalidCount: invalid.length },
             'validation error',

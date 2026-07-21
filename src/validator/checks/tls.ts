@@ -1,5 +1,5 @@
 import { dial, parseLine } from '../../proxy/dial.js';
-import { isSelfSignedError, tlsHandshake } from '../../proxy/tls.js';
+import { isSoftTlsError, tlsHandshake } from '../../proxy/tls.js';
 
 export interface TlsCheckResult {
   authorized: boolean;
@@ -29,7 +29,7 @@ export async function tlsCheck(
       sock.destroy();
     } catch {}
 
-    const selfSigned = isSelfSignedError(res);
+    const selfSigned = isSoftTlsError(res);
 
     if (opts.strictTLS && !res.authorized) {
       const err = new Error(`TLS invalid/self-signed: ${res.authorizationError || 'unauthorized'}`);

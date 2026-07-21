@@ -1,6 +1,7 @@
 import type net from 'node:net';
 import tls from 'node:tls';
-import { dial, isBlockedTarget, parseLine } from '../../proxy/dial.js';
+import { dial, parseLine } from '../../proxy/dial.js';
+import { isBlockedTarget } from '../../proxy/ssrf.js';
 
 export interface HttpCheckResult {
   latency: number;
@@ -85,39 +86,8 @@ export async function httpCheck(
     let headersFound = false;
     let firstByteTime = 0;
     let done = false;
-    const timeout = setTimeout(() => {
-      if (!done) {
-        done = true;
-        try {
-          socket.destroy();
-        } catch {}
-        reject(new Error('HTTP timeout'));
-      }
-    }, opts.maxLatency + 5000);
-
-    const onData = (chunk: Buffer) => {
-      if (firstByteTime === 0) {
-        firstByteTime = Date.now();
-        ttfb = firstByteTime - start;
-      }
-      buf = Buffer.concat([buf, chunk]);
-      if (buf.length > 2 * 1024 * 1024) {
-        socket.destroy();
-        reject(new Error('response too large'));
-        return;
-      }
-      if (!headersFound) {
-        const idx = buf.indexOf('\r\n\r\n');
-        if (idx !== -1) {
-          headersFound = true;
-        }
-      }
-      // If we already have headers and full body? For /ip, body is small, we can wait for close
-      // But we'll wait for socket end to keep it simple
-    };
-
-    socket.on('data', onData);
-    socket.on('end', () => {
+    let isChunked = false;
+    const processResponse = () => {
       if (done) return;
       done = true;
       clearTimeout(timeout);
@@ -127,29 +97,21 @@ export async function httpCheck(
       let headerStr = '';
       let bodyStr = '';
       let status = 0;
-
       while (headerEndIdx !== -1) {
         headerStr = full.slice(0, headerEndIdx);
         bodyStr = full.slice(headerEndIdx + 4);
         const firstLine = headerStr.split('\r\n')[0] || '';
         status = parseInt(firstLine.split(' ')[1] || '0', 10);
-
         if (status === 100) {
-          // Skip 100-Continue and look for the next header block
           full = bodyStr;
           headerEndIdx = full.indexOf('\r\n\r\n');
         } else {
           break;
         }
       }
-
       if (headerEndIdx === -1) {
         bodyStr = full;
       }
-
-      // Anon check: only inspect HTTP response headers, not body.
-      // The body (e.g. httpbin /ip) can contain the client IP, which is not
-      // evidence of a transparent proxy — only forwarded headers are.
       if (opts.anonCheck && status === 200) {
         const headerLines = headerStr.split('\r\n');
         for (let i = 1; i < headerLines.length; i++) {
@@ -166,12 +128,53 @@ export async function httpCheck(
           }
         }
       }
-
       try {
         socket.destroy();
       } catch {}
       resolve({ latency: totalLatency, ttfb, status, body: bodyStr, headers: headerStr });
-    });
+    };
+    const timeout = setTimeout(() => {
+      if (!done) {
+        done = true;
+        try {
+          socket.destroy();
+        } catch {}
+        reject(new Error('HTTP timeout'));
+      }
+    }, opts.maxLatency + 5000);
+
+    const onData = (chunk: Buffer) => {
+      if (done) return;
+      if (firstByteTime === 0) {
+        firstByteTime = Date.now();
+        ttfb = firstByteTime - start;
+      }
+      if (buf.length + chunk.length > 2 * 1024 * 1024) {
+        socket.destroy();
+        reject(new Error('response too large'));
+        return;
+      }
+      buf = Buffer.concat([buf, chunk]);
+      if (!headersFound) {
+        const idx = buf.indexOf('\r\n\r\n');
+        if (idx !== -1) {
+          headersFound = true;
+          const headerLines = buf.slice(0, idx).toString().toLowerCase();
+          if (headerLines.includes('transfer-encoding: chunked')) {
+            isChunked = true;
+          }
+        }
+      }
+      if (headersFound && isChunked) {
+        const headerEnd = buf.indexOf('\r\n\r\n') + 4;
+        if (headerEnd > 3 && buf.slice(headerEnd).includes(Buffer.from('0\r\n\r\n'))) {
+          processResponse();
+        }
+      }
+    };
+
+    socket.on('data', onData);
+    socket.on('end', processResponse);
 
     socket.on('error', (e: Error) => {
       if (!done) {
