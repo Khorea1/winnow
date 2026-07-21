@@ -39,7 +39,7 @@ export async function tryWithRetry(
 ): Promise<{ sock: net.Socket; head: Buffer; upstream: ParsedProxy; latency: number }> {
   const targetKey = `${tHost}:${tPort}`;
   const isTargetTracked = config.targets.includes(targetKey);
-  const candidates = pickMany(proxies, health, config.retries, isTargetTracked ? targetKey : undefined, config.maxErrors + 5);
+  const candidates = pickMany(proxies, health, config.retries, isTargetTracked ? targetKey : undefined, config.maxErrors);
   if (!candidates.length) {
     logger.warn({ target: targetKey, reqId }, 'no proxies alive');
     EventLog.safePush(eventLog, { type: 'pool', proxy: '(all)', target: targetKey, status: 'failure', error: 'no proxies alive' });
