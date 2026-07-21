@@ -13,7 +13,9 @@ const logger = createLogger('ssrf');
 
 function normalizeIPv6(host: string): string {
   // Only call after net.isIPv6(host) confirmed true
-  const lower = host.toLowerCase();
+  const zoneIdx = host.indexOf('%');
+  const cleanHost = zoneIdx !== -1 ? host.slice(0, zoneIdx) : host;
+  const lower = cleanHost.toLowerCase();
   // Expand ::
   let groups: string[];
   if (lower.includes('::')) {
@@ -45,14 +47,17 @@ function normalizeIPv6(host: string): string {
 }
 
 export function isBlockedTarget(host: string): boolean {
+  // Strip IPv6 zone ID (e.g. fe80::1%eth0 → fe80::1)
+  const zoneIdx = host.indexOf('%');
+  const cleanHost = zoneIdx !== -1 ? host.slice(0, zoneIdx) : host;
   // Hostname-based blocking (SSRF prevention for internal hostnames)
-  const lower = host.toLowerCase();
+  const lower = cleanHost.toLowerCase();
   if (lower === 'localhost' || lower === 'localhost.localdomain' || lower === '127.0.0.1' || lower === '::1' || lower === '0.0.0.0' || lower === '::')
     return true;
   if (lower.endsWith('.local') || lower.endsWith('.internal')) return true;
 
   // IPv4 checks
-  const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(host);
+  const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(cleanHost);
   if (m) {
     const [a, b] = [parseInt(m[1], 10), parseInt(m[2], 10)];
     if (a === 127 || a === 0) return true; // loopback / 0.0.0.0/8
@@ -63,8 +68,8 @@ export function isBlockedTarget(host: string): boolean {
     if (a === 192 && b === 168) return true; // RFC 1918 192.168/16
   }
   // IPv6 checks
-  if (net.isIPv6(host)) {
-    const normalized = normalizeIPv6(host);
+  if (net.isIPv6(cleanHost)) {
+    const normalized = normalizeIPv6(cleanHost);
     // IPv6 loopback full form (both ::1 and zero-padded forms)
     if (normalized === '0:0:0:0:0:0:0:1') return true;
 
@@ -110,9 +115,9 @@ export function isBlockedTarget(host: string): boolean {
     lower.startsWith('instance-data.')
   )
     return true;
-  // Note: Full SSRF protection requires post-DNS resolution IP validation.
-  // Hostnames that resolve to private IPs (e.g., via DNS rebinding or CNAME)
-  // are not caught here. Consider adding `dns.lookup` validation for production.
+  // Note: Post-DNS SSRF validation is handled in dial.ts via isBlockedAfterDns,
+  // called before connecting through the upstream proxy. This pre-DNS check only
+  // catches string-matching rules (literal IPs, known hostnames).
   return false;
 }
 
@@ -136,7 +141,7 @@ export async function isBlockedAfterDns(host: string): Promise<boolean> {
     }
     return false;
   } catch {
-    logger.warn({ host }, 'SSRF DNS check failed, allowing through');
+    logger.warn({ host }, 'SSRF DNS check failed, allowing through (connection will fail at dial layer)');
     return false;
   }
 }
