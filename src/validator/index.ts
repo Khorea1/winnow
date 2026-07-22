@@ -78,7 +78,7 @@ export async function validateFile(filePath: string, opts: ValidatorOptions, onP
   };
 }
 
-// CLI entry - compatible with legacy validador.sh
+// CLI entry - compatible with legacy validator.sh
 export async function cliMain() {
   const args = process.argv.slice(2);
   let proxyFile = '';

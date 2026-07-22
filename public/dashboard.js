@@ -172,7 +172,7 @@ const I18N = {
     configErrToast: 'Erro ao salvar configuração',
     errLoadConfig: 'Erro ao carregar configuração: {msg}',
     connectedLog: 'Conectado — atualizações em tempo real ativas',
-    connLostLog: 'Conexão perdida — tentando reconectar em 3s…',
+    connLostLog: 'Conexão perdida — tentando novamente em {delay}s…',
     stoppingValidationLog: 'Parando validação — encerrando processos…',
     validationStoppedLog: 'Validação interrompida pelo usuário',
     validationErrLog: 'Erro na validação: {msg}',
@@ -334,7 +334,7 @@ const I18N = {
     configErrToast: 'Error saving configuration',
     errLoadConfig: 'Error loading configuration: {msg}',
     connectedLog: 'Connected — live updates active',
-    connLostLog: 'Connection lost — retrying in 3s…',
+    connLostLog: 'Connection lost — retrying in {delay}s…',
     stoppingValidationLog: 'Stopping validation — shutting down processes…',
     validationStoppedLog: 'Validation stopped by user',
     validationErrLog: 'Validation error: {msg}',
@@ -382,6 +382,7 @@ let isValidating = false;
 let CFG = {};
 let valCounters = { total: 0, ok: 0, fail: 0 };
 let refreshScheduled = false;
+let _sseRetryCount = 0;
 
 /* ==================== DOM refs ==================== */
 
@@ -928,6 +929,7 @@ function connectSSE() {
     if (dot) dot.className = 'dot live';
     if (txt) txt.textContent = t('liveActive');
     syncValidationStatus();
+    _sseRetryCount = 0;  // Reset retry count on successful connection
   });
 
   ev.addEventListener('health:update', () => {
@@ -942,10 +944,12 @@ function connectSSE() {
 
   ev.onerror = () => {
     ev.close();
-    log(t('connLostLog'), 'fail');
+    _sseRetryCount++;
+    const delay = Math.min(1000 * Math.pow(2, _sseRetryCount), 30000);
+    log(t('connLostLog', { delay: Math.round(delay / 1000) }), 'fail');
     if (dot) dot.className = 'dot down';
     if (txt) txt.textContent = t('reconnecting');
-    setTimeout(connectSSE, 3000);
+    setTimeout(connectSSE, delay);
   };
 }
 
@@ -1010,7 +1014,7 @@ let lastRenderedEventId = 0;
 
 async function loadInitialEvents() {
   try {
-    const res = await fetch('/api/events/log');
+    const res = await fetch('/api/events');
     const events = await res.json();
     for (const e of events) {
       renderEventLine(e);
@@ -1032,54 +1036,42 @@ function renderEventLine(e) {
   line.className = 'evt-line';
   line.dataset.type = e.type;
 
+  // --- Primary row (time · type · proxy · status · latency · bytes) ---
+  const primary = document.createElement('div');
+  primary.className = 'evt-primary';
+
   // Time
   const time = document.createElement('span');
   time.className = 'evt-time';
   time.textContent = new Date(e.ts).toLocaleTimeString(locale());
-  line.appendChild(time);
+  primary.appendChild(time);
 
   // Type badge
   const typeBadge = document.createElement('span');
   typeBadge.className = `evt-type ${e.type}`;
   typeBadge.textContent = e.type;
-  line.appendChild(typeBadge);
+  primary.appendChild(typeBadge);
 
   // Proxy
   const proxy = document.createElement('span');
   proxy.className = 'evt-proxy';
   proxy.textContent = e.proxy || '—';
   proxy.title = e.proxy || '';
-  line.appendChild(proxy);
-
-  // Target
-  if (e.target) {
-    const target = document.createElement('span');
-    target.className = 'evt-target';
-    target.textContent = `→ ${e.target}`;
-    line.appendChild(target);
-  }
+  primary.appendChild(proxy);
 
   // Status
   const status = document.createElement('span');
   status.className = `evt-status ${e.status}`;
   const statusLabelMap = { success: t('evtStatusOk'), failure: t('evtStatusFail'), attempt: t('evtStatusAttempt'), info: t('evtStatusInfo') };
   status.textContent = statusLabelMap[e.status] || e.status;
-  line.appendChild(status);
-
-  // Error
-  if (e.error) {
-    const err = document.createElement('span');
-    err.className = 'evt-error';
-    err.textContent = e.error;
-    line.appendChild(err);
-  }
+  primary.appendChild(status);
 
   // Latency detail
   if (e.latency !== undefined && e.latency !== null) {
     const lat = document.createElement('span');
     lat.className = 'evt-detail';
     lat.textContent = `${e.latency}ms`;
-    line.appendChild(lat);
+    primary.appendChild(lat);
   }
 
   // Bytes detail
@@ -1087,15 +1079,54 @@ function renderEventLine(e) {
     const bytes = document.createElement('span');
     bytes.className = 'evt-detail';
     bytes.textContent = `${(e.bytes / 1024).toFixed(1)}KB`;
-    line.appendChild(bytes);
+    primary.appendChild(bytes);
+  }
+
+  line.appendChild(primary);
+
+  // --- Secondary rows (target, error, detail — each full-width) ---
+
+  // Target
+  if (e.target) {
+    const sec = document.createElement('div');
+    sec.className = 'evt-secondary';
+    const icon = document.createElement('span');
+    icon.className = 'evt-secondary-icon';
+    icon.textContent = '\u2192';
+    sec.appendChild(icon);
+    const target = document.createElement('span');
+    target.className = 'evt-target';
+    target.textContent = e.target;
+    target.title = e.target;
+    sec.appendChild(target);
+    line.appendChild(sec);
+  }
+
+  // Error
+  if (e.error) {
+    const sec = document.createElement('div');
+    sec.className = 'evt-secondary';
+    const icon = document.createElement('span');
+    icon.className = 'evt-secondary-icon';
+    icon.textContent = '\u2717';
+    sec.appendChild(icon);
+    const err = document.createElement('span');
+    err.className = 'evt-error';
+    err.textContent = e.error;
+    err.title = e.error;
+    sec.appendChild(err);
+    line.appendChild(sec);
   }
 
   // Extra detail
   if (e.detail) {
+    const sec = document.createElement('div');
+    sec.className = 'evt-secondary';
     const det = document.createElement('span');
     det.className = 'evt-detail';
     det.textContent = e.detail;
-    line.appendChild(det);
+    sec.appendChild(det);
+    line.appendChild(sec);
   }
 
   const autoscroll = document.getElementById('evt-autoscroll')?.checked ?? true;

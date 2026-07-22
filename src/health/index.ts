@@ -8,9 +8,7 @@ import { applyFailure, applySuccess, classifyError, type HealthEntry } from './c
 
 const logger = createLogger('health');
 
-// ── Re-exports for backward compatibility ─────────────────────────────────
-// classifyError, transientBanMs, applyFailure, applySuccess, HealthEntry
-// moved to ./classify.ts.
+// Re-exports from classify.ts for public API
 export { applyFailure, applySuccess, classifyError, type HealthEntry, transientBanMs } from './classify.js';
 
 export function ensureStarEntry(health: HealthStore, proxy: string): HealthEntry {
@@ -41,7 +39,7 @@ export class HealthStore extends EventEmitter {
     this.db = db;
     this._eventLog = eventLog;
     this._load();
-    this._pruneFrozenOnBoot(config.pruneAfterMs, config.fatalBanMs, config.maxFatalErrors ?? 3);
+    this._pruneFrozenOnBoot(config.pruneAfterMs, config.fatalBanMs);
     this._timer = setInterval(() => this._flush(), 5000);
     this._timer.unref();
   }
@@ -245,7 +243,7 @@ export class HealthStore extends EventEmitter {
    * to a finite `pruneAfterMs` ban so the proxy can come back alive. Reduce
    * fatalErrors by maxFatalErrors-1 so one more fatal reaches the threshold.
    */
-  private _pruneFrozenOnBoot(pruneAfterMs: number, fatalBanMs: number, _maxFatalErrors: number) {
+  private _pruneFrozenOnBoot(pruneAfterMs: number, fatalBanMs: number) {
     const now = Date.now();
     const demotionPeriod = Math.min(pruneAfterMs, fatalBanMs * 3);
     const demotedTo = now + demotionPeriod;

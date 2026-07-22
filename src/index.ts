@@ -42,7 +42,6 @@ function parseArgv(args: string[]): Record<string, string | number | boolean> {
 }
 const argv = parseArgv(process.argv.slice(2));
 
-// Parse CLI args
 // Parse CLI args — undefined when flag not passed, so config.json defaults survive
 const cliPort = typeof argv.port === 'string' ? Number(argv.port) : undefined;
 const cliProxyFile = typeof argv.proxyfile === 'string' ? argv.proxyfile : undefined;
@@ -161,10 +160,6 @@ const server = createProxyServer({
   health,
   eventLog,
   getProxies: () => proxies,
-  onRequestMetrics: (_info) => {
-    // optional: log metrics
-    // console.log(`[METRICS] ${info.proxy} -> ${info.target} ${info.success ? 'OK' : 'FAIL'} ${info.bytes}b ${info.latency}ms`)
-  },
 });
 
 // Dashboard registration

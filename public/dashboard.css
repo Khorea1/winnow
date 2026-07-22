@@ -948,14 +948,13 @@ tbody tr:focus-within .proxy-cell .icon-btn,
 }
 
 .evt-line {
-  display: grid;
-  grid-template-columns: 70px 70px 1fr 1fr 50px 1fr auto;
-  gap: 8px;
-  padding: 4px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 0;
   border-bottom: 1px solid var(--line);
   transition: background var(--transition);
   border-radius: 2px;
-  align-items: baseline;
 }
 
 .evt-line:last-child {
@@ -963,7 +962,15 @@ tbody tr:focus-within .proxy-cell .icon-btn,
 }
 
 .evt-line:hover {
-  background: rgba(255,255,255,0.015);
+  background: rgba(255, 255, 255, 0.015);
+}
+
+/* Primary row: time · type · proxy · status + details */
+.evt-primary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
 }
 
 .evt-time {
@@ -971,12 +978,14 @@ tbody tr:focus-within .proxy-cell .icon-btn,
   font-size: 0.68rem;
   color: var(--ink-faint);
   font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
 }
 
 .evt-type {
   font-size: 0.7rem;
   font-weight: 500;
   font-family: var(--font-display);
+  flex-shrink: 0;
 }
 
 .evt-type.connect     { color: var(--ok); }
@@ -995,6 +1004,39 @@ tbody tr:focus-within .proxy-cell .icon-btn,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.evt-status {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-dim);
+  flex-shrink: 0;
+}
+
+.evt-detail {
+  font-size: 0.68rem;
+  color: var(--ink-faint);
+  flex-shrink: 0;
+}
+
+/* Secondary rows: target, error, detail — full width, on their own line */
+.evt-secondary {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding-left: 14px;  /* indent relative to primary row */
+  min-width: 0;
+}
+
+.evt-secondary-icon {
+  flex-shrink: 0;
+  font-size: 0.68rem;
+  color: var(--ink-faint);
+  width: 12px;
+  text-align: center;
 }
 
 .evt-target {
@@ -1004,13 +1046,8 @@ tbody tr:focus-within .proxy-cell .icon-btn,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.evt-status {
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
-  font-variant-numeric: tabular-nums;
-  color: var(--ink-dim);
+  flex: 1;
+  min-width: 0;
 }
 
 .evt-error {
@@ -1020,11 +1057,8 @@ tbody tr:focus-within .proxy-cell .icon-btn,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.evt-detail {
-  font-size: 0.68rem;
-  color: var(--ink-faint);
+  flex: 1;
+  min-width: 0;
 }
 
 /* ── Aside: Config Card ────────────────────────────────── */
@@ -1470,16 +1504,36 @@ tbody tr:focus-within .proxy-cell .icon-btn,
     padding: 12px 14px 16px;
   }
 
-  .evt-line {
-    grid-template-columns: 55px 55px 1fr;
-    gap: 6px;
+  /* Event feed: shrink fonts, let flex wrap naturally */
+  .evt-primary {
+    flex-wrap: wrap;
+    gap: 4px;
   }
 
-  .evt-target,
+  .evt-time,
+  .evt-type {
+    font-size: 0.6rem;
+  }
+
+  .evt-proxy {
+    font-size: 0.65rem;
+  }
+
   .evt-status,
-  .evt-error,
   .evt-detail {
-    display: none;
+    font-size: 0.6rem;
+  }
+
+  .evt-secondary {
+    padding-left: 10px;
+  }
+
+  .evt-target {
+    font-size: 0.65rem;
+  }
+
+  .evt-error {
+    font-size: 0.62rem;
   }
 
   .spectrum-card {

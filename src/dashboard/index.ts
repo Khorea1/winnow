@@ -283,12 +283,6 @@ export function registerDashboard(
         return;
       }
 
-      if (pathname === '/api/events/log' && req.method === 'GET') {
-        const limit = Math.min(parseInt(urlObj.searchParams.get('limit') || '50', 10), 2000);
-        respondJson(res, { events: eventLog?.recent(limit) || [] });
-        return;
-      }
-
       if (pathname === '/api/events' && req.method === 'GET') {
         const limit = Math.min(parseInt(urlObj.searchParams.get('limit') || '50', 10), 2000);
         respondJson(res, { events: eventLog?.recent(limit) || [] });
@@ -395,6 +389,9 @@ export function registerDashboard(
           ...(corsOrigin ? { 'Access-Control-Allow-Origin': corsOrigin } : {}),
         });
         sseClients.add(res);
+        // Send connected event immediately and disable idle timeout
+        res.write(':heartbeat\n\nevent: connected\ndata: {}\n\n');
+        req.socket.setTimeout(0);
         const cleanup = () => {
           sseClients.delete(res);
           clearInterval(hb);
@@ -410,7 +407,7 @@ export function registerDashboard(
           } catch {
             cleanup();
           }
-        }, 30000);
+        }, 4000);
         hb.unref();
         return;
       }
