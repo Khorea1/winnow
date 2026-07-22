@@ -219,9 +219,15 @@ function broadcast(clients: Set<ServerResponse>, event: string, data: unknown) {
 }
 export function registerDashboard(
   server: http.Server,
-  ctx: { config: { current: RotatorConfig }; health: HealthStore; db: Database.Database; eventLog?: EventLog },
+  ctx: {
+    config: { current: RotatorConfig };
+    health: HealthStore;
+    db: Database.Database;
+    eventLog?: EventLog;
+    onConfigChange?: (updated: RotatorConfig) => void;
+  },
 ) {
-  const { config: cfgRef, health, db, eventLog } = ctx;
+  const { config: cfgRef, health, db, eventLog, onConfigChange } = ctx;
   const sseClients = new Set<ServerResponse>();
   let _validationRunning = false;
   let _abortController: AbortController | null = null;
@@ -295,6 +301,8 @@ export function registerDashboard(
           const patch = JSON.parse(body);
           const updated = updateConfig(patch, { ...cfgRef.current });
           Object.assign(cfgRef.current, updated);
+          // Notify config change listeners (health check timer reschedule, etc.)
+          onConfigChange?.(updated);
           // Refresh server-level timeouts from current config
           if (typeof updated.timeout === 'number') {
             server.timeout = Math.max(updated.timeout, 5000);

@@ -162,8 +162,21 @@ const server = createProxyServer({
   getProxies: () => proxies,
 });
 
-// Dashboard registration
-registerDashboard(server, { config: configRef, health, db, eventLog });
+// Dashboard registration — onConfigChange reschedules health check timer on hot-reload
+registerDashboard(server, {
+  config: configRef,
+  health,
+  db,
+  eventLog,
+  onConfigChange: () => {
+    clearTimeout(_hcTimer);
+    _hcTimer = undefined;
+    // If a tick is running, the running tick's final call to scheduleNextHealthCheck()
+    // picks up the new interval from configRef.current automatically.
+    // If nothing is running, schedule now with the new interval.
+    if (!_hcRunning) scheduleNextHealthCheck();
+  },
+});
 let hadUncaughtException = false;
 // Graceful shutdown with timeout
 function shutdown(reason = 'SIGTERM') {
@@ -249,7 +262,7 @@ async function scheduleNextHealthCheck() {
         }
       }
     }
-    scheduleNextHealthCheck(); // Always re-schedule (unless shuttingDown)
+    scheduleNextHealthCheck(); // Always re-schedule (unless shuttingDown) — picks up new config interval
   }, ms);
   _hcTimer.unref();
 }

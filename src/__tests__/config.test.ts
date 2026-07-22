@@ -304,4 +304,31 @@ describe('updateConfig health check', () => {
     assert.equal(result.healthCheckCount, DEFAULTS.healthCheckCount);
     assert.equal(result.healthCheckParallel, false);
   });
+
+  it('tick picks up new healthCheckInterval after config change (simulates scheduleNextHealthCheck logic)', () => {
+    // Start from DEFAULTS (avoids shared config file pollution from sibling tests)
+    const configRef: { current: RotatorConfig } = { current: { ...DEFAULTS } };
+    const originalInterval = configRef.current.healthCheckInterval;
+    assert.equal(originalInterval, 15000);
+
+    // Change the interval via updateConfig (as POST /api/config does)
+    const updated = updateConfig({ healthCheckInterval: 30000 }, { ...configRef.current });
+    Object.assign(configRef.current, updated);
+    assert.equal(configRef.current.healthCheckInterval, 30000);
+
+    // Simulate scheduleNextHealthCheck interval resolution
+    const interval = configRef.current.healthCheckInterval as number | false;
+    const ms = interval === false ? 5000 : typeof interval === 'number' && interval > 0 ? interval : 15000;
+    assert.equal(ms, 30000);
+  });
+
+  it('tick uses correct polling ms when healthCheckInterval is false', () => {
+    const configRef: { current: RotatorConfig } = { current: { ...DEFAULTS } };
+    const updated = updateConfig({ healthCheckInterval: false }, { ...configRef.current });
+
+    // Manually apply — updateConfig returns the sanitized result
+    const interval: number | false = updated.healthCheckInterval;
+    const ms = interval === false ? 5000 : typeof interval === 'number' && interval > 0 ? interval : 15000;
+    assert.equal(ms, 5000);
+  });
 });
