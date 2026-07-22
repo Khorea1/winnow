@@ -8,6 +8,5 @@ dist/
 *.db-wal
 *.txt
 __pycache__/
-src/scrapped.txt
 Dockerfile
 docker-compose.yml

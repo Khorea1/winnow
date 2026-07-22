@@ -14,4 +14,3 @@ config.json
 RULES.md
 docs/
 .winnow.pid
-public/dashboard.html
