@@ -98,73 +98,64 @@ export async function healthCheckTick(proxies: ParsedProxy[], health: HealthStor
   const target = targets[Math.floor(Math.random() * targets.length)];
   const parsed = parseHostPort(target, 80);
   if (!parsed) return;
-  const toCheck = pickMany(proxies, health, 10, target, config.maxErrors + 10);
+  const toCheck = pickMany(proxies, health, config.healthCheckCount, target, config.maxErrors + 10);
   logger.debug({ target, checkCount: toCheck.length }, 'health check tick');
-  await Promise.allSettled(
-    toCheck.map(async (p) => {
-      const dialStart = Date.now();
-      try {
-        const { sock } = await dial(p, parsed.host, parsed.port, config.timeout);
-        if (TLS_PORTS[parsed.port]) {
-          try {
-            const tlsRes = await tlsHandshake(sock, parsed.host, { insecure: !config.validationStrictTLS, timeout: config.timeout });
-            if (!tlsRes.authorized) {
-              sock.destroy();
-              if (config.validationStrictTLS) {
-                throw new Error(`TLS invalid: ${tlsRes.authorizationError}`);
-              }
-              // Non-strict: TLS handshake completed (proxy reachable) but cert is bad.
-              // Record as transient failure — the proxy is working, just the upstream cert is bad.
-              const errMsg = `TLS unauthorized: ${tlsRes.authorizationError}`;
-              EventLog.safePush(eventLog, { type: 'healthcheck', proxy: p.raw, target, status: 'failure', error: errMsg, errorClass: 'transient' });
-              logger.warn({ proxy: p.raw, target, error: errMsg }, 'health check TLS failure (non-strict)');
-              health.recordFailure(p.raw, target, new Error(errMsg), config, Date.now());
-              return; // skip success path
-            }
+  const checkOne = async (p: ParsedProxy) => {
+    const dialStart = Date.now();
+    try {
+      const { sock } = await dial(p, parsed.host, parsed.port, config.timeout);
+      if (TLS_PORTS[parsed.port]) {
+        try {
+          const tlsRes = await tlsHandshake(sock, parsed.host, { insecure: !config.validationStrictTLS, timeout: config.timeout });
+          if (!tlsRes.authorized) {
             sock.destroy();
-          } catch (e: unknown) {
-            try {
-              sock.destroy();
-            } catch {}
-            const errMsg = e instanceof Error ? e.message : String(e);
-            EventLog.safePush(eventLog, {
-              type: 'healthcheck',
-              proxy: p.raw,
-              target,
-              status: 'failure',
-              error: errMsg,
-              errorClass: classifyError(e),
-            });
-            logger.warn({ proxy: p.raw, target, error: errMsg, errorClass: classifyError(e) }, 'health check TLS failure');
-            throw e;
+            if (config.validationStrictTLS) {
+              throw new Error(`TLS invalid: ${tlsRes.authorizationError}`);
+            }
+            const errMsg = `TLS unauthorized: ${tlsRes.authorizationError}`;
+            EventLog.safePush(eventLog, { type: 'healthcheck', proxy: p.raw, target, status: 'failure', error: errMsg, errorClass: 'transient' });
+            logger.warn({ proxy: p.raw, target, error: errMsg }, 'health check TLS failure (non-strict)');
+            health.recordFailure(p.raw, target, new Error(errMsg), config, Date.now());
+            return;
           }
-        } else {
           sock.destroy();
+        } catch (e: unknown) {
+          try {
+            sock.destroy();
+          } catch {}
+          const errMsg = e instanceof Error ? e.message : String(e);
+          EventLog.safePush(eventLog, { type: 'healthcheck', proxy: p.raw, target, status: 'failure', error: errMsg, errorClass: classifyError(e) });
+          logger.warn({ proxy: p.raw, target, error: errMsg, errorClass: classifyError(e) }, 'health check TLS failure');
+          throw e;
         }
-        EventLog.safePush(eventLog, {
-          type: 'healthcheck',
-          proxy: p.raw,
-          target,
-          status: 'success',
-          latency: Date.now() - dialStart,
-        });
-        health.recordSuccess(p.raw, target, Date.now() - dialStart, dialStart);
-        logger.debug({ proxy: p.raw, target, latency: Date.now() - dialStart }, 'health check success');
-      } catch (e: unknown) {
-        const errMsg = e instanceof Error ? e.message : String(e);
-        const errCode = e != null && typeof e === 'object' && 'code' in e ? String((e as Record<string, unknown>).code) : undefined;
-        EventLog.safePush(eventLog, {
-          type: 'healthcheck',
-          proxy: p.raw,
-          target,
-          status: 'failure',
-          error: errMsg,
-          errorCode: errCode,
-          errorClass: classifyError(e),
-        });
-        health.recordFailure(p.raw, target, e, config, Date.now());
-        logger.warn({ proxy: p.raw, target, error: errMsg, errorClass: classifyError(e) }, 'health check failure');
+      } else {
+        sock.destroy();
       }
-    }),
-  );
+      EventLog.safePush(eventLog, { type: 'healthcheck', proxy: p.raw, target, status: 'success', latency: Date.now() - dialStart });
+      health.recordSuccess(p.raw, target, Date.now() - dialStart, dialStart);
+      logger.debug({ proxy: p.raw, target, latency: Date.now() - dialStart }, 'health check success');
+    } catch (e: unknown) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      const errCode = e != null && typeof e === 'object' && 'code' in e ? String((e as Record<string, unknown>).code) : undefined;
+      EventLog.safePush(eventLog, {
+        type: 'healthcheck',
+        proxy: p.raw,
+        target,
+        status: 'failure',
+        error: errMsg,
+        errorCode: errCode,
+        errorClass: classifyError(e),
+      });
+      health.recordFailure(p.raw, target, e, config, Date.now());
+      logger.warn({ proxy: p.raw, target, error: errMsg, errorClass: classifyError(e) }, 'health check failure');
+    }
+  };
+
+  if (config.healthCheckParallel) {
+    await Promise.allSettled(toCheck.map(checkOne));
+  } else {
+    for (const p of toCheck) {
+      await checkOne(p);
+    }
+  }
 }

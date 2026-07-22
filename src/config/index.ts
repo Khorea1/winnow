@@ -46,6 +46,10 @@ export interface RotatorConfig {
   banMaxMs: number;
   pruneAfterMs: number;
   upstreamIdleTimeout: number;
+  // Health check tuning
+  healthCheckInterval: number | false; // ms between ticks; false disables periodic checks entirely
+  healthCheckCount: number; // proxies to test per tick
+  healthCheckParallel: boolean; // true = Promise.allSettled (burst), false = serial for-loop
 }
 
 const DEFAULTS: RotatorConfig = {
@@ -77,6 +81,9 @@ const DEFAULTS: RotatorConfig = {
   banMaxMs: 3 * 60 * 1000, // 3 min cap on transient bans
   pruneAfterMs: 24 * 60 * 60 * 1000, // 24h — frozen proxy auto-pruned after this
   upstreamIdleTimeout: 0, // 0 = use timeout * 2 for idle timeout
+  healthCheckInterval: 15000,
+  healthCheckCount: 10,
+  healthCheckParallel: true,
 };
 
 const API_ALLOWED_KEYS = new Set<keyof RotatorConfig>([
@@ -107,6 +114,9 @@ const API_ALLOWED_KEYS = new Set<keyof RotatorConfig>([
   'banMaxMs',
   'pruneAfterMs',
   'upstreamIdleTimeout',
+  'healthCheckInterval',
+  'healthCheckCount',
+  'healthCheckParallel',
 ]);
 
 function clampInt(value: unknown, min: number, max: number, def: number): number {
@@ -214,6 +224,12 @@ function sanitize(cfg: Record<string, unknown>): RotatorConfig {
     : [];
   c.targets = trimmedTargets.length ? trimmedTargets : DEFAULTS.targets;
   c.upstreamIdleTimeout = clampNum(c.upstreamIdleTimeout, 0, 120000, DEFAULTS.upstreamIdleTimeout);
+  c.healthCheckInterval =
+    c.healthCheckInterval === false
+      ? false
+      : (clampNum(c.healthCheckInterval as number, 1000, 300000, DEFAULTS.healthCheckInterval as number) as number | false);
+  c.healthCheckCount = clampInt(c.healthCheckCount, 1, 200, DEFAULTS.healthCheckCount);
+  c.healthCheckParallel = c.healthCheckParallel !== false;
   c.proxyFile = ensureString(c.proxyFile, DEFAULTS.proxyFile, (s) => !s.includes('\0'));
   if (!path.isAbsolute(c.proxyFile)) c.proxyFile = path.resolve(resolveDataDir(), c.proxyFile);
   return c;

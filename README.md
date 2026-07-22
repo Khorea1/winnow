@@ -160,14 +160,14 @@ There are two layers of TLS checking:
 
 ### Periodic health checks
 
-`src/index.ts` runs `healthCheckTick` every 15 seconds via `setInterval`. Each tick:
+`src/index.ts` runs `healthCheckTick` on a configurable interval (`healthCheckInterval`, default 15 s). Each tick:
 
 1. Picks a **random target** from `config.targets` (round-robins through the target list probabilistically — every target gets sampled over time).
-2. Calls `pickMany(proxies, health, 10, target, maxErrors + 10)` — the **top 10 proxies for that target by score**, shuffled.
-3. Dials each one. For TLS targets (port 443), performs the TLS handshake and rejects on cert failure.
+2. Calls `pickMany(proxies, health, healthCheckCount, target, maxErrors + 10)` — the **top `healthCheckCount` proxies for that target by score**, shuffled.
+3. Dials each one — either concurrently (`healthCheckParallel: true`, default) or serially to avoid burst TCP connections (`healthCheckParallel: false`). For TLS targets (port 443), performs the TLS handshake and rejects on cert failure.
 4. Records `recordSuccess` (with measured latency) or `recordFailure`.
 
-The check is skippable if no targets are configured. It uses an `_hcRunning` guard so ticks never overlap.
+The check is skippable if no targets are configured, or if `healthCheckInterval` is set to `false`. It uses an `_hcRunning` guard so ticks never overlap.
 
 ### Multi-stage validation pipeline
 
@@ -228,6 +228,9 @@ Loaded from `config.json` (path overridden by `WINNOW_CONFIG` env or `--config` 
 | `retries` | `5` | Proxies tried per request (top-N by score) |
 | `maxErrors` | `3` | Transient errors before a proxy is excluded from rotation |
 | `timeout` | `3500` | Upstream connection timeout (ms) |
+| `healthCheckInterval` | `15000` | Interval between health check ticks (ms). Set to `false` to disable periodic checks entirely. |
+| `healthCheckCount` | `10` | Proxies to test per tick. Lower = less burst, higher = faster pool coverage. |
+| `healthCheckParallel` | `true` | `true` = fire all checks concurrently (current behavior), `false` = serialize them 1-by-1 to avoid burst TCP connections. |
 
 ### Fatal/transient tuning
 

@@ -153,7 +153,7 @@ function load() {
 
 const configRef = { current: config };
 let shuttingDown = false;
-let _hcInterval: ReturnType<typeof setInterval> | undefined;
+let _hcTimer: ReturnType<typeof setTimeout> | undefined;
 let fileWatcher: fs.FSWatcher | undefined;
 // Server initialization
 const server = createProxyServer({
@@ -176,10 +176,10 @@ function shutdown(reason = 'SIGTERM') {
   shuttingDown = true;
   logger.info({ reason }, 'shutting down');
   clearTimeout(_reloadTimer);
-  // Clear healthcheck interval — next tick sees shuttingDown and bails
-  if (_hcInterval !== undefined) {
-    clearInterval(_hcInterval);
-    _hcInterval = undefined;
+  // Clear healthcheck timer — next tick sees shuttingDown and bails
+  if (_hcTimer !== undefined) {
+    clearTimeout(_hcTimer);
+    _hcTimer = undefined;
   }
   // Close file watcher
   if (fileWatcher) {
@@ -234,19 +234,31 @@ process.on('unhandledRejection', (reason) => {
 });
 let _hcRunning = false;
 let _pendingReload = false;
-_hcInterval = setInterval(async () => {
-  if (_hcRunning || shuttingDown) return;
-  _hcRunning = true;
-  try {
-    await healthCheckTick(proxies, health, configRef.current, configRef.current.targets, eventLog);
-  } finally {
-    _hcRunning = false;
-    if (_pendingReload) {
-      _pendingReload = false;
-      load();
+async function scheduleNextHealthCheck() {
+  if (shuttingDown) return;
+  // When disabled, poll every 5s to detect re-enable. When enabled, use configured interval.
+  const interval = configRef.current.healthCheckInterval;
+  const ms = interval === false ? 5000 : typeof interval === 'number' && interval > 0 ? interval : 15000;
+  _hcTimer = setTimeout(async () => {
+    if (shuttingDown) return;
+    // Read interval fresh from config — picks up hot-reload changes
+    if (!_hcRunning && configRef.current.healthCheckInterval !== false) {
+      _hcRunning = true;
+      try {
+        await healthCheckTick(proxies, health, configRef.current, configRef.current.targets, eventLog);
+      } finally {
+        _hcRunning = false;
+        if (_pendingReload) {
+          _pendingReload = false;
+          load();
+        }
+      }
     }
-  }
-}, 15000);
+    scheduleNextHealthCheck(); // Always re-schedule (unless shuttingDown)
+  }, ms);
+  _hcTimer.unref();
+}
+scheduleNextHealthCheck();
 // Start server — wrap in error handling for EADDRINUSE etc.
 server.on('error', (err: NodeJS.ErrnoException) => {
   if (err.code === 'EADDRINUSE') {

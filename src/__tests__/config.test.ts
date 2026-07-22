@@ -18,6 +18,18 @@ describe('DEFAULTS', () => {
     assert.equal(DEFAULTS.timeout, 3500);
   });
 
+  it('healthCheckInterval defaults to 15000', () => {
+    assert.equal(DEFAULTS.healthCheckInterval, 15000);
+  });
+
+  it('healthCheckCount defaults to 10', () => {
+    assert.equal(DEFAULTS.healthCheckCount, 10);
+  });
+
+  it('healthCheckParallel defaults to true', () => {
+    assert.equal(DEFAULTS.healthCheckParallel, true);
+  });
+
   it('has expected ban defaults', () => {
     assert.equal(DEFAULTS.banBaseMs, 30000);
     assert.equal(DEFAULTS.banMaxMs, 180000);
@@ -49,6 +61,9 @@ describe('DEFAULTS', () => {
       'banMaxMs',
       'pruneAfterMs',
       'upstreamIdleTimeout',
+      'healthCheckInterval',
+      'healthCheckCount',
+      'healthCheckParallel',
     ];
     for (const f of requiredFields) {
       assert.ok(f in DEFAULTS, `DEFAULTS missing ${f}`);
@@ -172,6 +187,39 @@ describe('loadConfig', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('clamps healthCheckInterval out of range', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'winnow-test-'));
+    const configPath = path.join(dir, 'config.json');
+    const orig = process.env.WINNOW_CONFIG;
+    process.env.WINNOW_CONFIG = configPath;
+
+    try {
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({
+          healthCheckInterval: 0,
+        }),
+      );
+
+      const cfg = loadConfig();
+      assert.equal(cfg.healthCheckInterval, DEFAULTS.healthCheckInterval);
+
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({
+          healthCheckInterval: false,
+        }),
+      );
+
+      const cfg2 = loadConfig();
+      assert.equal(cfg2.healthCheckInterval, false);
+    } finally {
+      if (orig) process.env.WINNOW_CONFIG = orig;
+      else delete process.env.WINNOW_CONFIG;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('updateConfig', () => {
@@ -222,5 +270,38 @@ describe('updateConfig', () => {
     });
     assert.equal(result.retries, DEFAULTS.retries);
     assert.equal(result.banBaseMs, DEFAULTS.banBaseMs);
+  });
+});
+
+describe('updateConfig health check', () => {
+  let configDir: string;
+  let origWinnowConfig: string | undefined;
+
+  before(() => {
+    origWinnowConfig = process.env.WINNOW_CONFIG;
+    configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'winnow-config-test-'));
+    process.env.WINNOW_CONFIG = path.join(configDir, 'config.json');
+  });
+
+  after(() => {
+    if (origWinnowConfig) process.env.WINNOW_CONFIG = origWinnowConfig;
+    else delete process.env.WINNOW_CONFIG;
+    fs.rmSync(configDir, { recursive: true, force: true });
+  });
+
+  it('healthCheckInterval can be set to false via updateConfig', () => {
+    const result = updateConfig({
+      healthCheckInterval: false,
+    });
+    assert.equal(result.healthCheckInterval, false);
+  });
+
+  it('healthCheckCount and healthCheckParallel are sanitized in updateConfig', () => {
+    const result = updateConfig({
+      healthCheckCount: 999,
+      healthCheckParallel: false,
+    });
+    assert.equal(result.healthCheckCount, DEFAULTS.healthCheckCount);
+    assert.equal(result.healthCheckParallel, false);
   });
 });

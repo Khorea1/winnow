@@ -28,5 +28,8 @@
   "banMultiplier": 2,
   "banMaxMs": 180000,
   "pruneAfterMs": 86400000,
-  "upstreamIdleTimeout": 0
+  "upstreamIdleTimeout": 0,
+  "healthCheckInterval": 15000,
+  "healthCheckCount": 10,
+  "healthCheckParallel": true
 }
