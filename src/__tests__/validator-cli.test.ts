@@ -16,8 +16,8 @@ describe('buildOptionsFromConfig', () => {
     assert.equal(opts.ttfbRatio, 100);
     assert.equal(opts.maxGap, 5000);
     assert.equal(opts.insecure, false);
-    assert.equal(opts.strictTLS, false);
-    assert.equal(opts.anonCheck, false);
+    assert.equal(opts.strictTLS, true);
+    assert.equal(opts.anonCheck, true);
     assert.equal(opts.throttle, 100);
     assert.equal(opts.tlsHost, 'www.google.com');
     assert.equal(opts.tlsPort, 443);

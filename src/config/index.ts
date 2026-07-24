@@ -50,6 +50,10 @@ export interface RotatorConfig {
   healthCheckInterval: number | false; // ms between ticks; false disables periodic checks entirely
   healthCheckCount: number; // proxies to test per tick
   healthCheckParallel: boolean; // true = Promise.allSettled (burst), false = serial for-loop
+  // Session affinity — stick to same proxy per target for N ms (0 = disabled)
+  sessionAffinityMs: number;
+  // Pre-connect jitter — random delay before upstream dial (0 = disabled)
+  preConnectJitterMs: number;
 }
 
 const DEFAULTS: RotatorConfig = {
@@ -66,9 +70,9 @@ const DEFAULTS: RotatorConfig = {
   validationConnectTimeout: 4,
   validationThrottle: 100,
   validationTtfbRatio: 100,
-  validationAnonCheck: false,
+  validationAnonCheck: true,
   validationInsecure: false,
-  validationStrictTLS: false,
+  validationStrictTLS: true,
   validationPrune: true,
   validationMaxGap: 5000,
   validationTlsHost: 'www.google.com',
@@ -84,6 +88,8 @@ const DEFAULTS: RotatorConfig = {
   healthCheckInterval: 15000,
   healthCheckCount: 10,
   healthCheckParallel: true,
+  sessionAffinityMs: 300000, // 5 min — stick to same proxy per target
+  preConnectJitterMs: 0, // disabled by default (opt-in, adds latency)
 };
 
 const API_ALLOWED_KEYS = new Set<keyof RotatorConfig>([
@@ -117,6 +123,8 @@ const API_ALLOWED_KEYS = new Set<keyof RotatorConfig>([
   'healthCheckInterval',
   'healthCheckCount',
   'healthCheckParallel',
+  'sessionAffinityMs',
+  'preConnectJitterMs',
 ]);
 
 function clampInt(value: unknown, min: number, max: number, def: number): number {
@@ -230,6 +238,8 @@ function sanitize(cfg: Record<string, unknown>): RotatorConfig {
       : (clampNum(c.healthCheckInterval as number, 1000, 300000, DEFAULTS.healthCheckInterval as number) as number | false);
   c.healthCheckCount = clampInt(c.healthCheckCount, 1, 200, DEFAULTS.healthCheckCount);
   c.healthCheckParallel = c.healthCheckParallel !== false;
+  c.sessionAffinityMs = clampInt(c.sessionAffinityMs, 0, 86400000, DEFAULTS.sessionAffinityMs); // 0–24h
+  c.preConnectJitterMs = clampInt(c.preConnectJitterMs, 0, 10000, DEFAULTS.preConnectJitterMs); // 0–10s
   c.proxyFile = ensureString(c.proxyFile, DEFAULTS.proxyFile, (s) => !s.includes('\0'));
   if (!path.isAbsolute(c.proxyFile)) c.proxyFile = path.resolve(resolveDataDir(), c.proxyFile);
   return c;

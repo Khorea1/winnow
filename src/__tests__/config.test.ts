@@ -64,6 +64,8 @@ describe('DEFAULTS', () => {
       'healthCheckInterval',
       'healthCheckCount',
       'healthCheckParallel',
+      'sessionAffinityMs',
+      'preConnectJitterMs',
     ];
     for (const f of requiredFields) {
       assert.ok(f in DEFAULTS, `DEFAULTS missing ${f}`);

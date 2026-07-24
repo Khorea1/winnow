@@ -10,6 +10,31 @@ const logger = createLogger('rotator');
 // Ports that require TLS handshake validation during health checks.
 const TLS_PORTS: Record<number, true> = { 443: true, 8443: true, 4433: true, 9443: true };
 
+// Session affinity: stick to the same proxy per target within the affinity window.
+// This prevents per-request IP rotation that makes fingerprint-based correlation trivial.
+const sessionAffinity = new Map<string, { raw: string; expiresAt: number }>();
+
+function checkSessionProxy(
+  targetKey: string,
+  proxies: ParsedProxy[],
+  health: HealthStore,
+  forTarget: string | undefined,
+  maxErrors: number,
+  now: number,
+): ParsedProxy | undefined {
+  const entry = sessionAffinity.get(targetKey);
+  if (!entry || now >= entry.expiresAt) {
+    if (entry) sessionAffinity.delete(targetKey);
+    return undefined;
+  }
+  const proxy = proxies.find((p) => p.raw === entry.raw);
+  if (!proxy || !health.isAlive(proxy.raw, forTarget, maxErrors)) {
+    sessionAffinity.delete(targetKey);
+    return undefined;
+  }
+  return proxy;
+}
+
 export interface PoolOptions {
   config: RotatorConfig;
   health: HealthStore;
@@ -41,6 +66,52 @@ export async function tryWithRetry(
   const hostKey = tHost.includes(':') ? `[${tHost}]` : tHost;
   const targetKey = `${hostKey}:${tPort}`;
   const isTargetTracked = config.targets.includes(targetKey);
+  const now = Date.now();
+
+  // ── Session affinity ──────────────────────────────────────────────────────
+  // If enabled, try the same proxy for the same target within the affinity window.
+  // This prevents per-request IP rotation that makes fingerprint correlation trivial.
+  if (config.sessionAffinityMs > 0) {
+    const sticky = checkSessionProxy(targetKey, proxies, health, isTargetTracked ? targetKey : undefined, config.maxErrors, now);
+    if (sticky) {
+      try {
+        const start = Date.now();
+        const { sock, head } = await dial(sticky, tHost, tPort, config.timeout);
+        const latency = Date.now() - start;
+        // Renew the affinity window on success
+        sessionAffinity.set(targetKey, { raw: sticky.raw, expiresAt: now + config.sessionAffinityMs });
+        logger.info({ proxy: sticky.raw, target: targetKey, latency, reqId, sticky: true }, 'upstream dial succeeded (sticky)');
+        return { sock, head, upstream: sticky, latency };
+      } catch (e: unknown) {
+        // Sticky proxy failed — remove affinity, record failure, fall through
+        sessionAffinity.delete(targetKey);
+        health.recordFailure(sticky.raw, isTargetTracked ? targetKey : undefined, e, config, Date.now());
+        const errClass = classifyError(e);
+        EventLog.safePush(eventLog, {
+          type: 'retry',
+          proxy: sticky.raw,
+          target: targetKey,
+          status: 'attempt',
+          error: e instanceof Error ? e.message : String(e),
+          errorClass: errClass,
+          detail: 'sticky proxy failed, falling through',
+        });
+        logger.warn(
+          { proxy: sticky.raw, target: targetKey, error: e instanceof Error ? e.message : String(e), errorClass: errClass, reqId },
+          'sticky proxy failed, falling through',
+        );
+      }
+    }
+  }
+
+  // ── Pre-connect jitter ────────────────────────────────────────────────────
+  // Random delay before dialing makes timing patterns less predictable.
+  if (config.preConnectJitterMs > 0) {
+    const jitter = Math.random() * config.preConnectJitterMs;
+    if (jitter > 0) await new Promise((r) => setTimeout(r, jitter));
+  }
+
+  // ── Normal retry loop ─────────────────────────────────────────────────────
   const n = Math.max(1, config.retries);
   const candidates = pickMany(proxies, health, n, isTargetTracked ? targetKey : undefined, config.maxErrors);
   if (!candidates.length) {
@@ -57,6 +128,10 @@ export async function tryWithRetry(
       const { sock, head } = await dial(upstream, tHost, tPort, config.timeout);
       const latency = Date.now() - start;
       logger.info({ proxy: upstream.raw, target: targetKey, latency, reqId }, 'upstream dial succeeded');
+      // Record session affinity on successful dial
+      if (config.sessionAffinityMs > 0) {
+        sessionAffinity.set(targetKey, { raw: upstream.raw, expiresAt: Date.now() + config.sessionAffinityMs });
+      }
       return { sock, head, upstream, latency };
     } catch (e: unknown) {
       lastErr = e;

@@ -15,9 +15,9 @@
   "validationConnectTimeout": 4,
   "validationThrottle": 100,
   "validationTtfbRatio": 100,
-  "validationAnonCheck": false,
+  "validationAnonCheck": true,
   "validationInsecure": false,
-  "validationStrictTLS": false,
+  "validationStrictTLS": true,
   "validationPrune": true,
   "validationMaxGap": 5000,
   "validationTlsHost": "www.google.com",
@@ -31,5 +31,7 @@
   "upstreamIdleTimeout": 0,
   "healthCheckInterval": 15000,
   "healthCheckCount": 10,
-  "healthCheckParallel": true
+  "healthCheckParallel": true,
+  "sessionAffinityMs": 300000,
+  "preConnectJitterMs": 0
 }
