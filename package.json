@@ -27,7 +27,7 @@
     "better-sqlite3": "^12.11.1"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.4",
+    "@biomejs/biome": "^2.5.14",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^26.1.1",
     "lefthook": "^2.1.10",
