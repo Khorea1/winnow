@@ -1,5 +1,6 @@
+import { classifyProxy as classify, sortAndFilterProxies } from './dashboard-utils.js';
+
 (() => {
-'use strict';
 
 /* ==================== helpers ==================== */
 
@@ -386,8 +387,6 @@ let _sseRetryCount = 0;
 
 /* ==================== DOM refs ==================== */
 
-function layoutEl() { return document.getElementById('layout'); }
-
 /* ==================== sidebar toggle ==================== */
 
 const layout = document.getElementById('layout');
@@ -520,16 +519,6 @@ async function fetchJSON(url, opts) {
 
 /* ==================== status classification ==================== */
 
-function classify(p, now) {
-  const banned = p.banned || now < p.bannedUntil;
-  if (banned) return 'ban';
-  const maxErrors = CFG.maxErrors ?? 3;
-  if (p.errors >= maxErrors) return 'err';
-  const timeout = CFG.timeout || 3500;
-  if (p.latency !== 9999 && p.latency > timeout * 0.55) return 'warn';
-  return 'ok';
-}
-
 function statusLabel(status) {
   return { ok: t('statusOk'), warn: t('statusWarn'), err: t('statusErr'), ban: t('statusBan') }[status];
 }
@@ -581,32 +570,7 @@ async function refreshStats() {
 /* ==================== sort & filter ==================== */
 
 function getSortedFiltered() {
-  let list = proxyData.slice();
-  if (filterTerm) {
-    list = list.filter((p) => p.proxy.toLowerCase().includes(filterTerm));
-  }
-  if (statusFilter.size > 0) {
-    const now = Date.now();
-    list = list.filter((p) => statusFilter.has(classify(p, now)));
-  }
-  const now = Date.now();
-  list.sort((a, b) => {
-    let va, vb;
-    switch (sortKey) {
-      case 'proxy': va = a.proxy; vb = b.proxy; break;
-      case 'status': va = classify(a, now); vb = classify(b, now); break;
-      case 'score': va = a.score; vb = b.score; break;
-      case 'latency': va = a.latency; vb = b.latency; break;
-      case 'errors': va = a.errors; vb = b.errors; break;
-      case 'ok': va = a.successes; vb = b.successes; break;
-      default: va = a.score; vb = b.score;
-    }
-    if (typeof va === 'string') { va = va.toLowerCase(); vb = vb.toLowerCase(); }
-    if (va < vb) return sortDir === 'asc' ? -1 : 1;
-    if (va > vb) return sortDir === 'asc' ? 1 : -1;
-    return 0;
-  });
-  return list;
+  return sortAndFilterProxies(proxyData, { filterTerm, statusFilter, sortKey, sortDir, now: Date.now(), config: CFG });
 }
 
 function updateSortIndicators() {
@@ -643,7 +607,7 @@ updateSortIndicators();
 /* ==================== proxy table rendering ==================== */
 
 function buildRow(p, now) {
-  const status = classify(p, now);
+  const status = classify(p, now, CFG);
   const tr = document.createElement('tr');
   tr.dataset.proxyKey = p.proxy;
 
@@ -702,7 +666,7 @@ function buildRow(p, now) {
     clearTimeout(armTimer);
     delBtn.disabled = true;
     try {
-      await fetchJSON(`/api/proxy?key=${encodeURIComponent(p.proxy)}`, { method: 'DELETE' });
+      await fetchJSON('/api/proxy', { method: 'DELETE', headers: { 'X-Proxy-Key': p.proxy } });
       proxyData = proxyData.filter((x) => x.proxy !== p.proxy);
       renderProxyTable();
       renderSpectrum();
@@ -791,7 +755,7 @@ function renderProxyTable() {
   const statusCounts = { ok: 0, warn: 0, err: 0, ban: 0 };
   const now2 = Date.now();
   proxyData.forEach((p) => {
-    const s = classify(p, now2);
+    const s = classify(p, now2, CFG);
     if (statusCounts[s] !== undefined) statusCounts[s]++;
   });
   document.querySelectorAll('.filter-chip .count').forEach((el) => {
@@ -832,7 +796,7 @@ function renderSpectrum() {
   el.innerHTML = '';
   const frag = document.createDocumentFragment();
   ordered.forEach((p) => {
-    const status = classify(p, now);
+    const status = classify(p, now, CFG);
     const bar = document.createElement('div');
     bar.className = `bar ${status}`;
     let heightPct;
@@ -936,6 +900,13 @@ function connectSSE() {
     if (!refreshScheduled) {
       refreshScheduled = true;
       setTimeout(() => { refreshScheduled = false; refreshStats(); }, 600);
+    }
+  });
+
+  ev.addEventListener('proxy:removed', () => {
+    if (!refreshScheduled) {
+      refreshScheduled = true;
+      setTimeout(() => { refreshScheduled = false; refreshStats(); }, 100);
     }
   });
 

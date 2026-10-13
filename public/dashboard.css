@@ -126,7 +126,6 @@ body {
   position: sticky;
   top: 0;
   z-index: 100;
-  background: var(--panel);
   border-bottom: 1px solid var(--line);
   padding: 0 24px;
   display: flex;
@@ -260,7 +259,6 @@ body {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  row-gap: 6px;
   gap: 12px;
   padding: 6px 0 10px;
   font-size: 0.78rem;

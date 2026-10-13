@@ -20,6 +20,7 @@ const logger = createLogger('dashboard');
 const _DASHBOARD_PATH = path.join(import.meta.dirname, '../../public/dashboard.html');
 const _DASHBOARD_CSS_PATH = path.join(import.meta.dirname, '../../public/dashboard.css');
 const _DASHBOARD_JS_PATH = path.join(import.meta.dirname, '../../public/dashboard.js');
+const _DASHBOARD_UTILS_PATH = path.join(import.meta.dirname, '../../public/dashboard-utils.js');
 let _unsubEventLog: (() => void) | undefined;
 let _healthHandler: ((data: unknown) => void) | undefined;
 let _unsubHealth: (() => void) | undefined;
@@ -168,28 +169,29 @@ function readBody(req: IncomingMessage, res: ServerResponse): Promise<string | n
   return promise;
 }
 
+export function readDashboardHtml(candidates: readonly string[], cache: boolean): string {
+  if (cache && _dashboardHtml) return _dashboardHtml;
+  let html = '<html><body><h1>Dashboard not found</h1></body></html>';
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      html = fs.readFileSync(candidate, 'utf8');
+      break;
+    }
+  }
+  if (cache) _dashboardHtml = html;
+  return html;
+}
+
 function serveDashboard(res: ServerResponse) {
   try {
-    if (!_dashboardHtml) {
-      const candidates = [_DASHBOARD_PATH, path.join(process.cwd(), 'public/dashboard.html')];
-      for (const c of candidates) {
-        if (fs.existsSync(c)) {
-          _dashboardHtml = fs.readFileSync(c, 'utf8');
-          break;
-        }
-      }
-      if (!_dashboardHtml) {
-        // fallback minimal
-        _dashboardHtml = '<html><body><h1>Dashboard not found</h1></body></html>';
-      }
-    }
+    const html = readDashboardHtml([_DASHBOARD_PATH, path.join(process.cwd(), 'public/dashboard.html')], process.env.NODE_ENV === 'production');
     res.writeHead(200, {
       'Content-Type': 'text/html; charset=utf-8',
       'X-Content-Type-Options': 'nosniff',
       'Content-Security-Policy':
         "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; base-uri 'self'",
     });
-    res.end(_dashboardHtml);
+    res.end(html);
   } catch (e: unknown) {
     res.writeHead(500);
     res.end(`Dashboard error: ${e instanceof Error ? e.message : String(e)}`);
@@ -490,6 +492,22 @@ export function registerDashboard(
       if (pathname === '/dashboard.js') {
         try {
           const js = fs.readFileSync(_DASHBOARD_JS_PATH, 'utf8');
+          res.writeHead(200, {
+            'Content-Type': 'application/javascript; charset=utf-8',
+            'Cache-Control': 'no-cache',
+            'X-Content-Type-Options': 'nosniff',
+          });
+          res.end(js);
+        } catch {
+          res.writeHead(404);
+          res.end('// not found');
+        }
+        return;
+      }
+
+      if (pathname === '/dashboard-utils.js') {
+        try {
+          const js = fs.readFileSync(_DASHBOARD_UTILS_PATH, 'utf8');
           res.writeHead(200, {
             'Content-Type': 'application/javascript; charset=utf-8',
             'Cache-Control': 'no-cache',

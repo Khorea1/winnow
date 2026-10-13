@@ -41,6 +41,6 @@
     }
   },
   "files": {
-    "includes": ["**/src/**/*.ts", "**/public/**/*.html", "!**/node_modules", "!**/dist"]
+    "includes": ["**/src/**/*.ts", "**/src/**/*.js", "**/scripts/**/*.mjs", "**/public/**/*.js", "**/public/**/*.css", "!**/node_modules", "!**/dist"]
   }
 }
