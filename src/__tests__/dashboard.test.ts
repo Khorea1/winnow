@@ -66,7 +66,7 @@ describe('dashboard routes', () => {
   });
 
   it('rejects unauthenticated dashboard, assets, and API', async () => {
-    for (const p of ['/dashboard', '/dashboard.js', '/dashboard.css', '/dashboard-utils.js', '/api/validate/status', '/__stats']) {
+    for (const p of ['/dashboard', '/dashboard.js', '/dashboard.css', '/dashboard-utils.js', '/api/validate/status', '/__stats', '/metrics']) {
       const res = await fetch(`${base}${p}`);
       assert.equal(res.status, 401, p);
       await res.arrayBuffer();
@@ -100,6 +100,29 @@ describe('dashboard routes', () => {
     const body = (await res.json()) as { requestMetrics: typeof requestMetrics; connections: { active: number; limit: number; rejected: number } };
     assert.deepEqual(body.requestMetrics, requestMetrics);
     assert.deepEqual(body.connections, { active: 0, limit: DEFAULTS.maxConnections, rejected: 0 });
+  });
+  it('exports bounded Prometheus metrics with the dashboard authentication policy', async () => {
+    const res = await fetch(`${base}/metrics`, { headers: auth });
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type') || '', /^text\/plain; version=0\.0\.4/);
+    assert.equal(res.headers.get('cache-control'), 'no-store');
+    const body = await res.text();
+    assert.match(body, /^# TYPE winnow_proxy_pool_total gauge$/m);
+    assert.match(body, /^winnow_proxy_pool_total 0$/m);
+    assert.match(body, /^winnow_proxy_pool_healthy 0$/m);
+    assert.match(body, /^winnow_connections_active 0$/m);
+    assert.match(body, /^winnow_connections_limit 1000$/m);
+    assert.match(body, /^winnow_connection_rejections_total 0$/m);
+    assert.match(body, /^winnow_requests_total\{result="success"\} 2$/m);
+    assert.match(body, /^winnow_requests_total\{result="failure"\} 1$/m);
+    assert.match(body, /^winnow_request_bytes_total 120$/m);
+    assert.match(body, /^winnow_request_latency_milliseconds_sum 45$/m);
+    assert.doesNotMatch(body, /127\.0\.0\.1|dashboard-test-token/);
+
+    const methodNotAllowed = await fetch(`${base}/metrics`, { method: 'POST', headers: auth });
+    assert.equal(methodNotAllowed.status, 405);
+    assert.equal(methodNotAllowed.headers.get('allow'), 'GET');
+    await methodNotAllowed.arrayBuffer();
   });
   it('dispatches dashboard routes exclusively and forwards other requests to the proxy once', async () => {
     const before = forwardedRequests;

@@ -52,6 +52,7 @@ The name is also a deliberate counterweight to tools that call themselves "rotat
 - **Multi-stage validation pipeline** — progressive stages: TCP reachability → HTTP request/response via proxy → explicit TLS check → light streaming → heavy streaming (strict mode only). Run standalone from the CLI or trigger a run from the dashboard.
 - **Real-time dashboard** — SSE-powered web UI with live event log, pool stats, score-sorted proxy table, spectrum bar, and validation runner. English and Portuguese, auto-detected from the browser.
 - **REST API** — stats, health data, proxy removal, config hot-reload, validation runs.
+- **Prometheus metrics** — authenticated `/metrics` exposes pool health, active connections, saturation rejects, and request totals with fixed cardinality and no proxy addresses.
 - **SSRF protection** — private ranges (`127/8`, RFC 1918, link-local, RFC 6598), `localhost`, `*.local`, `*.internal`, and IPv6 loopback are blocked at the CONNECT/HTTP dial layer. Winnow resolves a hostname once per request, rejects it if any returned IP is blocked, and pins a validated address for every upstream retry. CONNECT, SOCKS5 and plain-HTTP forwarding use that address while preserving the original HTTP Host and TLS SNI. DNS failures fail closed without penalizing upstream health. Egress firewall restrictions remain recommended as defense in depth.
 - **HTTP CONNECT and HTTP GET proxy modes** — tunnels HTTPS via CONNECT and forwards plain HTTP via GET, with hop-by-hop header filtering per RFC 2616 §13.5.1.
 - **Docker** — multi-stage build, non-root user, `__stats` healthcheck, persistent volume.
@@ -321,6 +322,7 @@ Any flag left unset falls back to the matching `validation*` field in `config.js
 | `/dashboard.js` | GET | Dashboard ES module |
 | `/dashboard-utils.js` | GET | Dashboard classify/filter/sort helpers |
 | `/__stats` | GET | JSON stats: total, alive, top-50 proxies by score, retries/timeout, aggregate request metrics, and `connections` (`active`, live `limit`, cumulative `rejected` on HTTP/CONNECT saturation) |
+| `/metrics` | GET | Prometheus text exposition: healthy/total pool gauges, connection usage and rejections, completed request results, bytes and latency totals |
 | `/api/config` | GET | Read current config |
 | `/api/config` | POST | Hot-reload config (sanitized, allow-listed keys only) |
 | `/api/proxy?key=<key>` | DELETE | Remove a proxy (rewrites the proxy file atomically + clears health row + SSE `proxy:removed`) |
@@ -333,7 +335,7 @@ Any flag left unset falls back to the matching `validation*` field in `config.js
 
 ### Authentication
 
-Set `WINNOW_TOKEN` (or the aliases `DASHBOARD_TOKEN` / `API_TOKEN`) to require a bearer token for all `/api/`, `/dashboard`, `/events`, and `/__stats` access. The dashboard prompts for the token on its first unauthorized request, then stores it in browser local storage for API and SSE requests. Without a token configured, all routes are open.
+Set `WINNOW_TOKEN` (or the aliases `DASHBOARD_TOKEN` / `API_TOKEN`) to require a bearer token for all `/api/`, `/dashboard`, `/events`, `/__stats`, and `/metrics` access. The dashboard prompts for the token on its first unauthorized request, then stores it in browser local storage for API and SSE requests. Without a token configured, all routes are open. Configure a Prometheus scrape job with an `Authorization: Bearer <token>` header if token authentication is enabled. Metrics are process-local and reset on restart.
 
 ---
 
