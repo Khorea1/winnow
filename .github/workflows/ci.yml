@@ -7,7 +7,7 @@ on:
     branches: [master, main]
 
 jobs:
-  build-and-test:
+  checks:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -22,3 +22,14 @@ jobs:
       - run: npm run lint
       - run: npm run build
       - run: npm test
+
+  # Stable branch-protection status check.
+  gate:
+    name: gate
+    if: ${{ always() }}
+    needs:
+      - checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify required jobs
+        run: test "${{ needs.checks.result }}" = "success"

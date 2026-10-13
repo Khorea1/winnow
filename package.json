@@ -24,14 +24,14 @@
     "node": ">=22"
   },
   "dependencies": {
-    "better-sqlite3": "^12.11.1"
+    "better-sqlite3": "^13.0.3"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.4",
+    "@biomejs/biome": "^2.5.14",
     "@types/better-sqlite3": "^7.6.12",
-    "@types/node": "^26.1.1",
-    "lefthook": "^2.1.10",
-    "tsx": "^4.19.1",
+    "@types/node": "^26.6.2",
+    "lefthook": "^2.1.14",
+    "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   },
   "allowScripts": {
