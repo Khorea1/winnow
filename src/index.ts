@@ -9,9 +9,10 @@ import { initDb, startIncrementalVacuum } from './db/index.js';
 import { EventLog } from './events.js';
 import { blankEntry, HealthStore } from './health/index.js';
 import { createLogger } from './logger.js';
-import { type ParsedProxy, parseLine } from './proxy/dial.js';
+import { claimPidFile } from './pid.js';
+import { type ParsedProxy, parseUniqueProxies } from './proxy/dial.js';
 import { healthCheckTick } from './proxy/rotator.js';
-import { createProxyServer } from './proxy/server.js';
+import { applyServerTimeouts, createProxyServer } from './proxy/server.js';
 
 // CLI argument parser (manual, replaces minimist)
 function parseArgv(args: string[]): Record<string, string | number | boolean> {
@@ -152,16 +153,7 @@ function load() {
   _pendingReload = false;
   let list: ParsedProxy[];
   try {
-    const content = fs.readFileSync(config.proxyFile, 'utf8');
-    const seen = new Set<string>();
-    list = content
-      .split('\n')
-      .map(parseLine)
-      .filter((p): p is ParsedProxy => {
-        if (!p || seen.has(p.raw)) return false;
-        seen.add(p.raw);
-        return true;
-      });
+    list = parseUniqueProxies(fs.readFileSync(config.proxyFile, 'utf8'));
   } catch (e: unknown) {
     logger.warn({ error: e instanceof Error ? e.message : String(e) }, 'failed to read proxy file');
     return;
@@ -180,6 +172,15 @@ function load() {
 
 const configRef = { current: config };
 let shuttingDown = false;
+const pidPath = path.join(resolveDataDir(), '.winnow.pid');
+let ownsPidFile = false;
+function releasePidFile(): void {
+  if (!ownsPidFile) return;
+  try {
+    if (fs.readFileSync(pidPath, 'utf8').trim() === String(process.pid)) fs.unlinkSync(pidPath);
+  } catch {}
+  ownsPidFile = false;
+}
 let _hcTimer: ReturnType<typeof setTimeout> | undefined;
 let fileWatcher: fs.FSWatcher | undefined;
 // Server initialization
@@ -199,6 +200,7 @@ registerDashboard(server, {
   eventLog,
   getRequestMetrics: () => ({ ...requestMetrics }),
   onConfigChange: () => {
+    applyServerTimeouts(server, configRef.current);
     clearTimeout(_hcTimer);
     _hcTimer = undefined;
     // If a tick is running, the running tick's final call to scheduleNextHealthCheck()
@@ -239,10 +241,7 @@ function shutdown(reason = 'SIGTERM') {
         stopIncrementalVacuum();
         db.close();
       } catch {}
-      try {
-        const pidPath = path.join(resolveDataDir(), '.winnow.pid');
-        fs.unlinkSync(pidPath);
-      } catch {}
+      releasePidFile();
       process.exit(hadUncaughtException ? 1 : 0);
     }, 10_000).unref();
 
@@ -258,10 +257,7 @@ function shutdown(reason = 'SIGTERM') {
       health.stop();
       stopIncrementalVacuum();
       db.close();
-      try {
-        const pidPath = path.join(resolveDataDir(), '.winnow.pid');
-        fs.unlinkSync(pidPath);
-      } catch {}
+      releasePidFile();
       process.exit(hadUncaughtException ? 1 : 0);
     });
   }
@@ -273,10 +269,7 @@ process.on('uncaughtException', (err) => {
   health.stop(); // flushes pending writes
   stopIncrementalVacuum();
   db.close();
-  try {
-    const pidPath = path.join(resolveDataDir(), '.winnow.pid');
-    fs.unlinkSync(pidPath);
-  } catch {}
+  releasePidFile();
   process.exit(1);
 });
 
@@ -330,37 +323,13 @@ server.on('error', (err: NodeJS.ErrnoException) => {
   }
   shutdown('server_error');
 });
-try {
-  const pidPath = path.join(resolveDataDir(), '.winnow.pid');
-  const fd = fs.openSync(pidPath, 'wx');
-  fs.writeSync(fd, String(process.pid));
-  fs.closeSync(fd);
-} catch (e: unknown) {
-  if ((e as NodeJS.ErrnoException).code === 'EEXIST') {
-    try {
-      const existingPid = fs.readFileSync(path.join(resolveDataDir(), '.winnow.pid'), 'utf8').trim();
-      const pid = Number(existingPid);
-      let stale = !Number.isSafeInteger(pid) || pid <= 0;
-      if (!stale) {
-        try {
-          process.kill(pid, 0);
-          console.error('Another instance already running (PID ' + existingPid + '). Exiting.');
-          process.exit(1);
-        } catch (killError: unknown) {
-          const code = (killError as NodeJS.ErrnoException).code;
-          if (code === 'ESRCH') stale = true;
-          else if (code === 'EPERM') {
-            console.error('Another instance is active or inaccessible (PID ' + existingPid + '). Exiting.');
-            process.exit(1);
-          } else throw killError;
-        }
-      }
-      if (stale) fs.writeFileSync(path.join(resolveDataDir(), '.winnow.pid'), String(process.pid), 'utf8');
-    } catch (checkError) {
-      if ((checkError as NodeJS.ErrnoException).code === 'EPERM') console.error('PID file is inaccessible; refusing to overwrite it.');
-    }
-  }
+const pidClaim = claimPidFile(pidPath);
+if (pidClaim === 'running') {
+  logger.error({ pidPath }, 'another instance may already be running');
+  process.exit(1);
 }
+ownsPidFile = pidClaim === 'claimed';
+if (pidClaim === 'unavailable') logger.warn({ pidPath }, 'could not claim PID file');
 // Initial load
 load();
 // Start server — wrap in error handling for EADDRINUSE etc.

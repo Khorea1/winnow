@@ -25,6 +25,19 @@ export function parseLine(line: string): ParsedProxy | null {
   }
 }
 
+export function parseUniqueProxies(content: string): ParsedProxy[] {
+  const seen = new Set<string>();
+  const proxies: ParsedProxy[] = [];
+  for (const line of content.split('\n')) {
+    const parsed = parseLine(line);
+    if (parsed && !seen.has(parsed.url.href)) {
+      seen.add(parsed.url.href);
+      proxies.push(parsed);
+    }
+  }
+  return proxies;
+}
+
 export function parseHostPort(input: string, defaultPort = 443): { host: string; port: number } | null {
   if (!input) return null;
   input = input.trim();

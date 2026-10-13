@@ -27,6 +27,11 @@ export interface ProxyConnectionStats {
 
 const connectionTrackers = new WeakMap<http.Server, ConnectionTracker>();
 
+export function applyServerTimeouts(server: http.Server, config: RotatorConfig): void {
+  server.timeout = Math.max(config.timeout, 5000);
+  server.keepAliveTimeout = Math.min(server.timeout, 30000);
+}
+
 /** Current proxy workload, excluding dashboard and health-check traffic. */
 export function getProxyConnectionStats(server: http.Server): ProxyConnectionStats | undefined {
   const tracker = connectionTrackers.get(server);
@@ -34,10 +39,8 @@ export function getProxyConnectionStats(server: http.Server): ProxyConnectionSta
 }
 
 export function createProxyServer(ctx: ProxyServerCtx): http.Server {
-  const config = ctx.config.current;
   const server = http.createServer();
-  server.timeout = Math.max(config.timeout, 5000);
-  server.keepAliveTimeout = Math.min(server.timeout, 30000);
+  applyServerTimeouts(server, ctx.config.current);
 
   // Encapsulated mutable state — no module-level variable (F2 fix)
   const connections: ConnectionTracker = {
