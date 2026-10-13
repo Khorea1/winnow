@@ -34,6 +34,7 @@ export function handleHttp(ctx: HttpHandlerCtx, req: IncomingMessage, res: Serve
   let targetKey = '';
   const conn = ctx.connections;
   if (conn.count >= conn.max) {
+    conn.rejected++;
     try {
       res.writeHead(503, { 'Content-Type': 'text/plain' });
       res.end('Service Unavailable');
@@ -41,6 +42,11 @@ export function handleHttp(ctx: HttpHandlerCtx, req: IncomingMessage, res: Serve
     return;
   }
   conn.count++;
+  // A response may outlive this synchronous handler by minutes. Keep the slot
+  // reserved until completion or client disconnect, including on error paths.
+  res.once('close', () => {
+    conn.count--;
+  });
   try {
     let targetUrl: URL;
     try {
@@ -71,7 +77,11 @@ export function handleHttp(ctx: HttpHandlerCtx, req: IncomingMessage, res: Serve
     // always tunnel so TLS terminates end-to-end.
     const dialMode = targetUrl.protocol === 'http:' ? 'forward' : 'tunnel';
     tryWithRetry(proxies, ctx.health, config, tHost, tPort, el, reqId, dialMode)
-      .then(({ sock: upSock, head: upHead, upstream, latency: dialLatency, forwarded }) => {
+      .then(({ sock: upSock, head: upHead, upstream, latency: dialLatency, forwarded, targetAddress }) => {
+        if (res.destroyed || res.writableEnded) {
+          upSock.destroy();
+          return;
+        }
         logger.info({ reqId, proxy: upstream.raw, target: targetKey, latency: dialLatency }, 'http upstream acquired');
         EventLog.safePush(el, { type: 'http', proxy: upstream.raw, target: targetKey, status: 'success', latency: dialLatency });
         let requestFailed = false;
@@ -99,6 +109,8 @@ export function handleHttp(ctx: HttpHandlerCtx, req: IncomingMessage, res: Serve
         if (upHead?.length) {
           markHttpFailure(new Error('upstream sent data before response'));
           upSock.destroy();
+          res.writeHead(502, { 'Content-Type': 'text/plain' });
+          res.end('Bad Gateway');
           return;
         }
 
@@ -108,7 +120,7 @@ export function handleHttp(ctx: HttpHandlerCtx, req: IncomingMessage, res: Serve
         let reqHeaderLines = '';
         for (let i = 0; i < req.rawHeaders.length; i += 2) {
           const k = req.rawHeaders[i].replace(/[\r\n]/g, '').trim();
-          if (k.toLowerCase() in STRIPPED_REQUEST_HEADERS) continue;
+          if (k.toLowerCase() === 'host' || k.toLowerCase() in STRIPPED_REQUEST_HEADERS) continue;
           const v = req.rawHeaders[i + 1].replace(/[\r\n]/g, '').trim();
           reqHeaderLines += `${k}: ${v}\r\n`;
         }
@@ -120,7 +132,8 @@ export function handleHttp(ctx: HttpHandlerCtx, req: IncomingMessage, res: Serve
         }
         // Forwarded (plain-HTTP) requests use the absolute URI; tunnelled
         // requests go through the CONNECT tunnel with origin-form.
-        const requestTarget = forwarded ? `http://${targetUrl.host}${pathAndQuery}` : pathAndQuery;
+        const dialAuthority = `${targetAddress.includes(':') ? `[${targetAddress}]` : targetAddress}:${tPort}`;
+        const requestTarget = forwarded ? `http://${dialAuthority}${pathAndQuery}` : pathAndQuery;
         const reqLine = `${req.method} ${requestTarget} HTTP/1.1\r\nHost: ${targetUrl.host}\r\n${reqHeaderLines}${proxyAuthLine}Connection: close\r\n\r\n`;
         upSock.write(reqLine);
         cancelTimeout = startSocketTimeout([upSock, req.socket], Math.max(config.timeout, 15000), config.upstreamIdleTimeout || config.timeout * 2, () => {
@@ -384,7 +397,5 @@ export function handleHttp(ctx: HttpHandlerCtx, req: IncomingMessage, res: Serve
       res.writeHead(502, { 'Content-Type': 'text/plain' });
       res.end('Bad Gateway');
     } catch {}
-  } finally {
-    conn.count--;
   }
 }

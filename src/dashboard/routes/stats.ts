@@ -1,7 +1,9 @@
 import type { ServerResponse } from 'node:http';
 import { type HealthEntry, HealthStore } from '../../health/index.js';
+import { redactProxy } from '../../proxy/redact.js';
+import { getProxyConnectionStats } from '../../proxy/server.js';
 import { respondJson } from '../http.js';
-import { sanitizeProxyKey } from '../proxyKey.js';
+import { proxyId } from '../proxyKey.js';
 import type { DashboardRouteContext } from '../types.js';
 
 export function handleStatsRoute(res: ServerResponse, pathname: string, ctx: DashboardRouteContext): boolean {
@@ -17,7 +19,7 @@ export function handleStatsRoute(res: ServerResponse, pathname: string, ctx: Das
       const frozen = h.frozenUntil > now;
       const banned = now < h.bannedUntil;
       const score = frozen || banned ? Infinity : HealthStore.computeScore(h, now);
-      return { proxy: sanitizeProxyKey(raw), ...h, score, banned, frozen };
+      return { id: proxyId(raw), proxy: redactProxy(raw), ...h, score, banned, frozen };
     })
     .sort((a, b) => a.score - b.score)
     .slice(0, 50);
@@ -32,7 +34,8 @@ export function handleStatsRoute(res: ServerResponse, pathname: string, ctx: Das
     targets: cfgRef.current.targets,
     retries: cfgRef.current.retries,
     timeout: cfgRef.current.timeout,
-    ...(ctx.getRequestMetrics ? { requestMetrics: ctx.getRequestMetrics() } : {}),
+    connections: getProxyConnectionStats(ctx.server) ?? { active: 0, limit: cfgRef.current.maxConnections, rejected: 0 },
+    requestMetrics: ctx.getRequestMetrics?.() ?? { requests: 0, successes: 0, failures: 0, bytes: 0, latencyMs: 0 },
   });
   return true;
 }

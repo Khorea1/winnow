@@ -1,5 +1,5 @@
 import net from 'node:net';
-import { isBlockedAfterDns } from './ssrf.js';
+import { isBlockedTarget, resolveTargetAddress } from './ssrf.js';
 
 export interface ParsedProxy {
   raw: string;
@@ -113,7 +113,8 @@ export function httpConnect(upstream: ParsedProxy, tHost: string, tPort: number,
         reject(new Error('invalid target host'));
         return;
       }
-      const req = `CONNECT ${tHost}:${tPort} HTTP/1.1\r\nHost: ${tHost}:${tPort}\r\n${auth}Connection: keep-alive\r\n\r\n`;
+      const authority = net.isIPv6(tHost) ? `[${tHost}]:${tPort}` : `${tHost}:${tPort}`;
+      const req = `CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\n${auth}Connection: keep-alive\r\n\r\n`;
       sock.write(req);
     });
     sock.on('data', (d: Buffer) => {
@@ -426,16 +427,16 @@ export function httpForwardProxy(upstream: ParsedProxy, timeout: number): Promis
   });
 }
 
-export async function dial(upstream: ParsedProxy, h: string, p: number, timeout: number, mode: DialMode = 'tunnel') {
+export async function dial(upstream: ParsedProxy, h: string, p: number, timeout: number, mode: DialMode = 'tunnel', pinnedAddress?: string) {
   if (!['http', 'socks5', 'socks'].includes(upstream.proto)) {
     throw new Error(`unsupported proxy protocol: ${upstream.proto}`);
   }
-  // Post-DNS SSRF validation: reject if any resolved IP is a blocked target
-  if (await isBlockedAfterDns(h)) {
+  if (isBlockedTarget(h) || (pinnedAddress && (!net.isIP(pinnedAddress) || isBlockedTarget(pinnedAddress)))) {
     throw new Error(`target blocked by SSRF rules: ${h}`);
   }
-  if (upstream.proto === 'socks5' || upstream.proto === 'socks') return socks5Connect(upstream, h, p, timeout);
+  const address = pinnedAddress ?? (await resolveTargetAddress(h));
+  if (upstream.proto === 'socks5' || upstream.proto === 'socks') return socks5Connect(upstream, address, p, timeout);
   if (upstream.proto === 'socks4' || upstream.proto === 'socks4a') throw new Error('SOCKS4 not supported');
   if (isForwardedDial(upstream, mode)) return httpForwardProxy(upstream, timeout);
-  return httpConnect(upstream, h, p, timeout);
+  return httpConnect(upstream, address, p, timeout);
 }

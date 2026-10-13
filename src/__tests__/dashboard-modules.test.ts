@@ -72,7 +72,7 @@ test('dashboard routes retain auth, SSE, config, stats, validation and atomic pr
     const stats = (await (await fetch(`${base}/__stats`)).json()) as { total: number; alive: number; top: { proxy: string }[] };
     assert.equal(stats.total, 1);
     assert.equal(stats.alive, 1);
-    assert.equal(stats.top[0].proxy, '203.0.113.5:8080');
+    assert.equal(stats.top[0].proxy, 'http://***:***@203.0.113.5:8080');
     assert.equal(JSON.stringify(stats).includes('secret'), false);
 
     const recent = (await (await fetch(`${base}/api/events`)).json()) as { events: unknown[] };
@@ -98,7 +98,7 @@ test('dashboard routes retain auth, SSE, config, stats, validation and atomic pr
     const result = (await deleted.json()) as { removed: boolean; key: string; removedFromFile: boolean; removedFromHealth: boolean };
     assert.deepEqual(
       { removed: result.removed, key: result.key, removedFromFile: result.removedFromFile, removedFromHealth: result.removedFromHealth },
-      { removed: true, key: '203.0.113.5:8080', removedFromFile: true, removedFromHealth: true },
+      { removed: true, key: 'http://***:***@203.0.113.5:8080', removedFromFile: true, removedFromHealth: true },
     );
     assert.equal(health.has(raw), false);
     assert.equal(fs.readFileSync(proxyFile, 'utf8'), `# preserve me\n\n${other}\n`);

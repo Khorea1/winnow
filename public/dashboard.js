@@ -36,6 +36,8 @@ import { classifyProxy as classify, sortAndFilterProxies } from './dashboard-uti
       statTotalLabel: 'Proxies no pool',
       statAliveLabel: 'Saudáveis agora',
       statRetriesLabel: 'Retries / timeout',
+      statConnectionsLabel: 'Conexões ativas / limite',
+      connectionsRejected: 'rejeitadas por limite',
       statTargetsLabel: 'Alvos monitorados',
       statFileLabel: 'Arquivo ativo',
       allVisible: 'todos visíveis',
@@ -200,6 +202,8 @@ import { classifyProxy as classify, sortAndFilterProxies } from './dashboard-uti
       statTotalLabel: 'Proxies in pool',
       statAliveLabel: 'Healthy now',
       statRetriesLabel: 'Retries / timeout',
+      statConnectionsLabel: 'Active connections / limit',
+      connectionsRejected: 'rejected at capacity',
       statTargetsLabel: 'Monitored targets',
       statFileLabel: 'Active file',
       allVisible: 'all visible',
@@ -597,6 +601,11 @@ import { classifyProxy as classify, sortAndFilterProxies } from './dashboard-uti
       document.getElementById('stat-sample-banned').textContent = bannedInSample;
       document.getElementById('stat-alive').textContent = d.alive ?? 0;
       document.getElementById('stat-retries').textContent = d.retries ?? '—';
+      const connections = d.connections;
+      const connectionsEl = document.getElementById('stat-connections');
+      connectionsEl.textContent = connections ? `${connections.active} / ${connections.limit}` : '—';
+      connectionsEl.classList.toggle('amber', !!connections && connections.active >= connections.limit);
+      document.getElementById('stat-rejected').textContent = connections?.rejected ?? 0;
       document.getElementById('stat-timeout').textContent = d.timeout ?? CFG.timeout ?? '—';
       const targetsEl = document.getElementById('stat-targets');
       const targetsStr = Array.isArray(d.targets) ? d.targets.join(', ') || '—' : d.targets || '—';
@@ -668,7 +677,7 @@ import { classifyProxy as classify, sortAndFilterProxies } from './dashboard-uti
   function buildRow(p, now) {
     const status = classify(p, now);
     const tr = document.createElement('tr');
-    tr.dataset.proxyKey = p.proxy;
+    tr.dataset.proxyKey = p.id || p.proxy;
 
     // Status badge
     const tdStatus = document.createElement('td');
@@ -728,8 +737,8 @@ import { classifyProxy as classify, sortAndFilterProxies } from './dashboard-uti
       clearTimeout(armTimer);
       delBtn.disabled = true;
       try {
-        await fetchJSON(`/api/proxy?key=${encodeURIComponent(p.proxy)}`, { method: 'DELETE' });
-        proxyData = proxyData.filter((x) => x.proxy !== p.proxy);
+        await fetchJSON(`/api/proxy?key=${encodeURIComponent(p.id || p.proxy)}`, { method: 'DELETE' });
+        proxyData = proxyData.filter((x) => (p.id ? x.id !== p.id : x.proxy !== p.proxy));
         renderProxyTable();
         renderSpectrum();
         toast(t('delSuccessToast'));

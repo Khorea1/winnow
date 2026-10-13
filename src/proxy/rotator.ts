@@ -4,6 +4,7 @@ import { EventLog } from '../events.js';
 import { classifyError, type HealthStore } from '../health/index.js';
 import { createLogger } from '../logger.js';
 import { type DialMode, dial, isForwardedDial, type ParsedProxy, parseHostPort } from './dial.js';
+import { resolveTargetAddress } from './ssrf.js';
 import { tlsHandshake } from './tls.js';
 
 const logger = createLogger('rotator');
@@ -63,9 +64,12 @@ export async function tryWithRetry(
   eventLog?: EventLog,
   reqId?: string,
   dialMode: DialMode = 'tunnel',
-): Promise<{ sock: net.Socket; head: Buffer; upstream: ParsedProxy; latency: number; forwarded: boolean }> {
+): Promise<{ sock: net.Socket; head: Buffer; upstream: ParsedProxy; latency: number; forwarded: boolean; targetAddress: string }> {
   const hostKey = tHost.includes(':') ? `[${tHost}]` : tHost;
   const targetKey = `${hostKey}:${tPort}`;
+  // One DNS snapshot for the entire request, before affinity, jitter or retries.
+  // Target lookup failures must never count as failures of a healthy proxy.
+  const targetAddress = await resolveTargetAddress(tHost);
   const isTargetTracked = config.targets.includes(targetKey);
   const now = Date.now();
 
@@ -77,12 +81,12 @@ export async function tryWithRetry(
     if (sticky) {
       try {
         const start = Date.now();
-        const { sock, head } = await dial(sticky, tHost, tPort, config.timeout, dialMode);
+        const { sock, head } = await dial(sticky, tHost, tPort, config.timeout, dialMode, targetAddress);
         const latency = Date.now() - start;
         // Renew the affinity window on success
         sessionAffinity.set(targetKey, { raw: sticky.raw, expiresAt: now + config.sessionAffinityMs });
         logger.info({ proxy: sticky.raw, target: targetKey, latency, reqId, sticky: true }, 'upstream dial succeeded (sticky)');
-        return { sock, head, upstream: sticky, latency, forwarded: isForwardedDial(sticky, dialMode) };
+        return { sock, head, upstream: sticky, latency, forwarded: isForwardedDial(sticky, dialMode), targetAddress };
       } catch (e: unknown) {
         // Sticky proxy failed — remove affinity, record failure, fall through
         sessionAffinity.delete(targetKey);
@@ -126,14 +130,14 @@ export async function tryWithRetry(
   for (const upstream of candidates) {
     const start = Date.now();
     try {
-      const { sock, head } = await dial(upstream, tHost, tPort, config.timeout, dialMode);
+      const { sock, head } = await dial(upstream, tHost, tPort, config.timeout, dialMode, targetAddress);
       const latency = Date.now() - start;
       logger.info({ proxy: upstream.raw, target: targetKey, latency, reqId }, 'upstream dial succeeded');
       // Record session affinity on successful dial
       if (config.sessionAffinityMs > 0) {
         sessionAffinity.set(targetKey, { raw: upstream.raw, expiresAt: Date.now() + config.sessionAffinityMs });
       }
-      return { sock, head, upstream, latency, forwarded: isForwardedDial(upstream, dialMode) };
+      return { sock, head, upstream, latency, forwarded: isForwardedDial(upstream, dialMode), targetAddress };
     } catch (e: unknown) {
       lastErr = e;
       const errClass = classifyError(e);
@@ -174,12 +178,19 @@ export async function healthCheckTick(proxies: ParsedProxy[], health: HealthStor
   const target = targets[Math.floor(Math.random() * targets.length)];
   const parsed = parseHostPort(target, 80);
   if (!parsed) return;
+  let targetAddress: string;
+  try {
+    targetAddress = await resolveTargetAddress(parsed.host);
+  } catch (e) {
+    logger.warn({ target, error: e instanceof Error ? e.message : String(e) }, 'skipping health check for invalid target');
+    return;
+  }
   const toCheck = pickMany(proxies, health, config.healthCheckCount, target, config.maxErrors + 10);
   logger.debug({ target, checkCount: toCheck.length }, 'health check tick');
   const checkOne = async (p: ParsedProxy) => {
     const dialStart = Date.now();
     try {
-      const { sock } = await dial(p, parsed.host, parsed.port, config.timeout);
+      const { sock } = await dial(p, parsed.host, parsed.port, config.timeout, 'tunnel', targetAddress);
       if (TLS_PORTS[parsed.port]) {
         try {
           const tlsRes = await tlsHandshake(sock, parsed.host, { insecure: config.validationInsecure, timeout: config.timeout });

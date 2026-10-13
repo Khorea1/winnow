@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createLogger } from '../../logger.js';
-import { isBlockedAfterDns, isBlockedTarget } from '../../proxy/ssrf.js';
+import { resolveTargetAddress } from '../../proxy/ssrf.js';
 import { readBody, respondJson, sanitizeError } from '../http.js';
 import type { DashboardRouteContext, ValidationOverrides } from '../types.js';
 
@@ -25,7 +25,7 @@ export async function handleValidateRoute(req: IncomingMessage, res: ServerRespo
     if (custom.baseUrl && typeof custom.baseUrl === 'string') {
       try {
         const u = new URL(custom.baseUrl);
-        if (isBlockedTarget(u.hostname) || (await isBlockedAfterDns(u.hostname))) delete custom.baseUrl;
+        await resolveTargetAddress(u.hostname);
       } catch {
         delete custom.baseUrl;
       }
@@ -46,7 +46,11 @@ export async function handleValidateRoute(req: IncomingMessage, res: ServerRespo
       delete custom.tlsHost;
     } else {
       // SSRF guard: prevent tlsHost from pointing to internal hosts
-      if (isBlockedTarget(custom.tlsHost) || (await isBlockedAfterDns(custom.tlsHost))) delete custom.tlsHost;
+      try {
+        await resolveTargetAddress(custom.tlsHost);
+      } catch {
+        delete custom.tlsHost;
+      }
     }
     if (custom.mode !== undefined && !['quick', 'standard', 'strict', 'stream', 'tcp-only'].includes(custom.mode)) {
       delete custom.mode;

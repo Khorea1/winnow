@@ -19,6 +19,20 @@ export interface ProxyServerCtx {
   eventLog?: EventLog;
 }
 
+export interface ProxyConnectionStats {
+  active: number;
+  limit: number;
+  rejected: number;
+}
+
+const connectionTrackers = new WeakMap<http.Server, ConnectionTracker>();
+
+/** Current proxy workload, excluding dashboard and health-check traffic. */
+export function getProxyConnectionStats(server: http.Server): ProxyConnectionStats | undefined {
+  const tracker = connectionTrackers.get(server);
+  return tracker && { active: tracker.count, limit: tracker.max, rejected: tracker.rejected };
+}
+
 export function createProxyServer(ctx: ProxyServerCtx): http.Server {
   const config = ctx.config.current;
   const server = http.createServer();
@@ -28,10 +42,12 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
   // Encapsulated mutable state — no module-level variable (F2 fix)
   const connections: ConnectionTracker = {
     count: 0,
+    rejected: 0,
     get max() {
       return ctx.config.current.maxConnections;
     },
   };
+  connectionTrackers.set(server, connections);
 
   const handlerCtx = {
     config: ctx.config,

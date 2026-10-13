@@ -7,6 +7,7 @@ import { isAuthorized } from './auth.js';
 import { respondJson, sanitizeError } from './http.js';
 import { handleConfigRoute } from './routes/config.js';
 import { handleEventsRoute } from './routes/events.js';
+import { handleMetricsRoute } from './routes/metrics.js';
 import { handleProxyRoute } from './routes/proxy.js';
 import { handleStatsRoute } from './routes/stats.js';
 import { handleValidateRoute } from './routes/validate.js';
@@ -81,7 +82,10 @@ export function registerDashboard(server: http.Server, ctx: DashboardRegistratio
 
   const origListeners = server.listeners('request');
 
-  server.prependListener('request', async (req: IncomingMessage, res: ServerResponse) => {
+  // EventEmitter calls every listener even if an earlier one ended the response.
+  // Dispatch dashboard routes here and only invoke proxy listeners for other traffic.
+  server.removeAllListeners('request');
+  server.on('request', async (req: IncomingMessage, res: ServerResponse) => {
     try {
       const urlObj = new URL(req.url || '/', 'http://localhost');
       const pathname = urlObj.pathname;
@@ -89,6 +93,7 @@ export function registerDashboard(server: http.Server, ctx: DashboardRegistratio
         pathname.startsWith('/api/') ||
         pathname === '/dashboard' ||
         pathname === '/events' ||
+        pathname === '/metrics' ||
         pathname === '/__stats' ||
         pathname === '/dashboard.js' ||
         pathname === '/dashboard.css' ||
@@ -124,6 +129,7 @@ export function registerDashboard(server: http.Server, ctx: DashboardRegistratio
       if (await handleProxyRoute(req, res, urlObj, routes)) return;
       if (await handleValidateRoute(req, res, urlObj, routes)) return;
       if (handleStatsRoute(res, pathname, routes)) return;
+      if (handleMetricsRoute(req, res, pathname, routes)) return;
       if (pathname === '/events') {
         openSseClient(req, res, sseClients);
         return;
@@ -181,14 +187,13 @@ export function registerDashboard(server: http.Server, ctx: DashboardRegistratio
         return;
       }
 
-      // Not a dashboard route — fall through to original listeners (HTTP proxy handler)
-      // When prependListener is used, original listeners fire automatically.
-      // If no original listeners exist, return 404 to avoid hanging.
-      if (!origListeners.length) {
+      // Never send unrecognized API requests through the outbound proxy.
+      if (pathname.startsWith('/api/') || !origListeners.length) {
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Not found' }));
         return;
       }
+      for (const listener of origListeners) listener.call(server, req, res);
     } catch (e: unknown) {
       logger.error({ error: e instanceof Error ? e.message : String(e) }, 'dashboard: unhandled request error');
       try {

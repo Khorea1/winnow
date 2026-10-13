@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import dns from 'node:dns';
 import { describe, it } from 'node:test';
-import { isBlockedTarget } from '../proxy/ssrf.js';
+import { isBlockedTarget, resolveTargetAddress } from '../proxy/ssrf.js';
 
 describe('isBlockedTarget — IPv4', () => {
   it('blocks 127.0.0.1 (loopback)', () => {
@@ -107,5 +108,51 @@ describe('isBlockedTarget — hostnames', () => {
 
   it('blocks metadata.google.internal (GCP metadata endpoint)', () => {
     assert.equal(isBlockedTarget('metadata.google.internal'), true);
+  });
+});
+
+describe('resolveTargetAddress — DNS rebinding boundary', () => {
+  it('pins a public address after checking every DNS answer', async (t) => {
+    let queries = 0;
+    t.mock.method(dns.promises, 'lookup', async () => {
+      queries++;
+      return [
+        { address: '198.51.100.42', family: 4 },
+        { address: '2001:4860:4860::8888', family: 6 },
+      ];
+    });
+    assert.equal(await resolveTargetAddress('public.example'), '198.51.100.42');
+    assert.equal(queries, 1);
+  });
+
+  it('rejects an entire DNS answer set containing even one private address', async (t) => {
+    t.mock.method(dns.promises, 'lookup', async () => [
+      { address: '198.51.100.42', family: 4 },
+      { address: '127.0.0.1', family: 4 },
+    ]);
+    await assert.rejects(resolveTargetAddress('rebind.example'), /blocked by SSRF/);
+  });
+
+  it('rejects a private IPv4-mapped IPv6 DNS answer', async (t) => {
+    t.mock.method(dns.promises, 'lookup', async () => [{ address: '::ffff:7f00:1', family: 6 }]);
+    await assert.rejects(resolveTargetAddress('mapped.example'), /blocked by SSRF/);
+  });
+
+  it('fails closed on DNS errors and empty answers', async (t) => {
+    const lookup = t.mock.method(dns.promises, 'lookup', async () => {
+      throw new Error('ENOTFOUND');
+    });
+    await assert.rejects(resolveTargetAddress('unknown.example'), /target DNS resolution failed/);
+    lookup.mock.mockImplementation((async () => []) as unknown as typeof dns.promises.lookup);
+    await assert.rejects(resolveTargetAddress('unknown.example'), /target DNS resolution failed/);
+  });
+
+  it('does not query DNS for literal IPs or denied hostnames', async (t) => {
+    const lookup = t.mock.method(dns.promises, 'lookup', async () => [{ address: '198.51.100.42', family: 4 }]);
+    assert.equal(await resolveTargetAddress('8.8.8.8'), '8.8.8.8');
+    assert.equal(await resolveTargetAddress('[2001:4860:4860::8888]'), '2001:4860:4860::8888');
+    await assert.rejects(resolveTargetAddress('metadata.google.internal'), /blocked by SSRF/);
+    await assert.rejects(resolveTargetAddress('fe80::1%eth0'), /blocked by SSRF/);
+    assert.equal(lookup.mock.callCount(), 0);
   });
 });

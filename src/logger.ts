@@ -1,3 +1,5 @@
+import { redactProxy } from './proxy/redact.js';
+
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 const LEVEL_MAP: Record<LogLevel, number> = {
@@ -38,7 +40,7 @@ export function createLogger(name: string): Logger {
       time: formatTime(new Date()),
       level: level.toUpperCase(),
       name,
-      msg,
+      msg: redactProxy(msg),
     };
     for (const [k, v] of Object.entries(ctx)) {
       // Avoid collisions with built-in fields
@@ -48,9 +50,11 @@ export function createLogger(name: string): Logger {
     let jsonStr = '';
     let jsonError: string | undefined;
     try {
-      jsonStr = JSON.stringify(entry);
+      // Redact at the output boundary, including nested error context, so
+      // health state and upstream identifiers retain their original values.
+      jsonStr = JSON.stringify(entry, (_key, value: unknown) => (typeof value === 'string' ? redactProxy(value) : value));
     } catch (e) {
-      jsonError = e instanceof Error ? e.message : String(e);
+      jsonError = redactProxy(e instanceof Error ? e.message : String(e));
     }
     if (jsonError) {
       try {

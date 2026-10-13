@@ -9,7 +9,7 @@ import type Database from 'better-sqlite3';
 import { DEFAULTS } from '../config/index.js';
 import { registerDashboard, unsubscribeDashboard } from '../dashboard/index.js';
 import { initDb } from '../db/index.js';
-import { HealthStore } from '../health/index.js';
+import { blankEntry, HealthStore } from '../health/index.js';
 
 // Covers registerDashboard over HTTP on an ephemeral port: auth matrix, CSP,
 // DELETE 404, config allow-list, validate 409/stop, SSE client cap.
@@ -24,6 +24,7 @@ describe('dashboard routes', () => {
   let base = '';
   const auth = { authorization: 'Bearer dashboard-test-token' };
   const requestMetrics = { requests: 3, successes: 2, failures: 1, bytes: 120, latencyMs: 45 };
+  let forwardedRequests = 0;
 
   before(async () => {
     directory = fs.mkdtempSync(path.join(os.tmpdir(), 'winnow-dashboard-test-'));
@@ -37,6 +38,11 @@ describe('dashboard routes', () => {
     db = initDb(':memory:');
     health = new HealthStore(db, { pruneAfterMs: 0, fatalBanMs: 300_000 });
     server = http.createServer();
+    server.on('request', (_req, res) => {
+      forwardedRequests++;
+      res.writeHead(202);
+      res.end('proxy handler');
+    });
     registerDashboard(server, {
       config: { current: { ...DEFAULTS, proxyFile } },
       health,
@@ -60,7 +66,7 @@ describe('dashboard routes', () => {
   });
 
   it('rejects unauthenticated dashboard, assets, and API', async () => {
-    for (const p of ['/dashboard', '/dashboard.js', '/dashboard.css', '/dashboard-utils.js', '/api/validate/status', '/__stats']) {
+    for (const p of ['/dashboard', '/dashboard.js', '/dashboard.css', '/dashboard-utils.js', '/api/validate/status', '/__stats', '/metrics']) {
       const res = await fetch(`${base}${p}`);
       assert.equal(res.status, 401, p);
       await res.arrayBuffer();
@@ -91,8 +97,48 @@ describe('dashboard routes', () => {
   it('includes the request metrics aggregate in /__stats', async () => {
     const res = await fetch(`${base}/__stats`, { headers: auth });
     assert.equal(res.status, 200);
-    const body = (await res.json()) as { requestMetrics: typeof requestMetrics };
+    const body = (await res.json()) as { requestMetrics: typeof requestMetrics; connections: { active: number; limit: number; rejected: number } };
     assert.deepEqual(body.requestMetrics, requestMetrics);
+    assert.deepEqual(body.connections, { active: 0, limit: DEFAULTS.maxConnections, rejected: 0 });
+  });
+  it('exports bounded Prometheus metrics with the dashboard authentication policy', async () => {
+    const res = await fetch(`${base}/metrics`, { headers: auth });
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type') || '', /^text\/plain; version=0\.0\.4/);
+    assert.equal(res.headers.get('cache-control'), 'no-store');
+    const body = await res.text();
+    assert.match(body, /^# TYPE winnow_proxy_pool_total gauge$/m);
+    assert.match(body, /^winnow_proxy_pool_total 0$/m);
+    assert.match(body, /^winnow_proxy_pool_healthy 0$/m);
+    assert.match(body, /^winnow_connections_active 0$/m);
+    assert.match(body, /^winnow_connections_limit 1000$/m);
+    assert.match(body, /^winnow_connection_rejections_total 0$/m);
+    assert.match(body, /^winnow_requests_total\{result="success"\} 2$/m);
+    assert.match(body, /^winnow_requests_total\{result="failure"\} 1$/m);
+    assert.match(body, /^winnow_request_bytes_total 120$/m);
+    assert.match(body, /^winnow_request_latency_milliseconds_sum 45$/m);
+    assert.doesNotMatch(body, /127\.0\.0\.1|dashboard-test-token/);
+
+    const methodNotAllowed = await fetch(`${base}/metrics`, { method: 'POST', headers: auth });
+    assert.equal(methodNotAllowed.status, 405);
+    assert.equal(methodNotAllowed.headers.get('allow'), 'GET');
+    await methodNotAllowed.arrayBuffer();
+  });
+  it('dispatches dashboard routes exclusively and forwards other requests to the proxy once', async () => {
+    const before = forwardedRequests;
+    const [stats, unauthorized, admin] = await Promise.all([
+      fetch(`${base}/__stats`, { headers: auth }),
+      fetch(`${base}/__stats`),
+      fetch(`${base}/api/validate/status`, { headers: auth }),
+    ]);
+    assert.deepEqual([stats.status, unauthorized.status, admin.status], [200, 401, 200]);
+    await Promise.all([stats.arrayBuffer(), unauthorized.arrayBuffer(), admin.arrayBuffer()]);
+    assert.equal(forwardedRequests, before);
+
+    const forwarded = await fetch(`${base}/ordinary-traffic`);
+    assert.equal(forwarded.status, 202);
+    assert.equal(await forwarded.text(), 'proxy handler');
+    assert.equal(forwardedRequests, before + 1);
   });
   it('DELETE unknown proxy returns 404', async () => {
     const res = await fetch(`${base}/api/proxy?key=${encodeURIComponent('http://9.9.9.9:8080')}`, {
@@ -153,6 +199,53 @@ describe('dashboard routes', () => {
     await res.arrayBuffer();
 
     assert.equal(fs.readFileSync(proxyFile, 'utf8'), '# retained\n\nhttp://127.0.0.1:10\n');
+  });
+
+  it('deletes only the intended account when upstreams share a host', async () => {
+    const first = 'http://alice:secret1@proxy.example:8080';
+    const second = 'http://bob:secret2@proxy.example:8080';
+    fs.writeFileSync(proxyFile, `# keep\n${first}\n${second}\n`);
+    health.set(first, blankEntry());
+    health.set(second, blankEntry());
+    try {
+      const stats = await fetch(`${base}/__stats`, { headers: auth });
+      const body = (await stats.json()) as { top: { id: string; proxy: string }[] };
+      const shared = body.top.filter((row) => row.proxy === 'http://***:***@proxy.example:8080');
+      assert.equal(shared.length, 2);
+      assert.notEqual(shared[0].id, shared[1].id);
+      assert.match(shared[0].id, /^p_[0-9a-f]{64}$/);
+      assert.ok(!JSON.stringify(body).includes('secret1'));
+      assert.ok(!JSON.stringify(body).includes('secret2'));
+
+      const ambiguous = await fetch(`${base}/api/proxy?key=${encodeURIComponent(shared[0].proxy)}`, {
+        method: 'DELETE',
+        headers: auth,
+      });
+      assert.equal(ambiguous.status, 409);
+      await ambiguous.arrayBuffer();
+      assert.equal(fs.readFileSync(proxyFile, 'utf8'), `# keep\n${first}\n${second}\n`);
+      assert.equal(health.has(first), true);
+      assert.equal(health.has(second), true);
+
+      const firstId = body.top.find((row) => row.id === shared[0].id)?.id;
+      assert.ok(firstId);
+      const deletion = await fetch(`${base}/api/proxy?key=${encodeURIComponent(firstId)}`, {
+        method: 'DELETE',
+        headers: auth,
+      });
+      assert.equal(deletion.status, 200);
+      const removed = (await deletion.json()) as { id: string; removedFromHealth: boolean };
+      assert.equal(removed.id, firstId);
+      assert.equal(removed.removedFromHealth, true);
+      const remaining = fs.readFileSync(proxyFile, 'utf8');
+      assert.equal(remaining.startsWith('# keep\n'), true);
+      assert.equal(remaining.includes(first), health.has(first));
+      assert.equal(remaining.includes(second), health.has(second));
+      assert.equal(Number(remaining.includes(first)) + Number(remaining.includes(second)), 1);
+    } finally {
+      health.delete(first);
+      health.delete(second);
+    }
   });
 
   it('101st SSE client is rejected with 503', { timeout: 15000 }, async () => {

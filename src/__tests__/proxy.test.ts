@@ -1,19 +1,30 @@
 import assert from 'node:assert/strict';
+import dns from 'node:dns';
 import http from 'node:http';
 import net from 'node:net';
-import { after, before, describe, it } from 'node:test';
+import { after, before, describe, it, mock } from 'node:test';
 import Database from 'better-sqlite3';
 import { DEFAULTS } from '../config/index.js';
 import { blankEntry, HealthStore } from '../health/index.js';
 import type { ParsedProxy } from '../proxy/dial.js';
-import { createProxyServer } from '../proxy/server.js';
+import { createProxyServer, getProxyConnectionStats } from '../proxy/server.js';
 
 /**
  * Hostname used as the target in tests. Not blocked by SSRF (not a private IP
- * literal, not localhost, not *.local/ *.internal). The upstream proxy
- * intercepts this hostname and connects to 127.0.0.1.
+ * literal, not localhost, not *.local/ *.internal). Stub DNS resolves it to a
+ * documentation IP; the test upstream maps that pinned IP to 127.0.0.1.
  */
 const TARGET_HOST = 'winnow-test-target';
+const TARGET_ADDRESS = '198.51.100.42';
+let dnsLookupMock: ReturnType<typeof mock.method>;
+before(() => {
+  const originalLookup = dns.promises.lookup.bind(dns.promises);
+  dnsLookupMock = mock.method(dns.promises, 'lookup', ((hostname: string, options: object) => {
+    if (hostname === TARGET_HOST) return Promise.resolve([{ address: TARGET_ADDRESS, family: 4 }]);
+    return originalLookup(hostname, options);
+  }) as typeof dns.promises.lookup);
+});
+after(() => dnsLookupMock?.mock.restore());
 const BASE_CONFIG = {
   ...DEFAULTS,
   port: 0,
@@ -90,9 +101,9 @@ function startUpstreamProxy(): Promise<{ server: http.Server; port: number }> {
       res.end();
       return;
     }
-    const host = target.hostname === TARGET_HOST ? '127.0.0.1' : target.hostname;
+    const host = target.hostname === TARGET_ADDRESS ? '127.0.0.1' : target.hostname;
     const port = parseInt(target.port, 10) || 80;
-    const headers = { ...req.headers, host: target.host, connection: 'close' };
+    const headers = { ...req.headers, connection: 'close' };
     const up = http.request({ host, port, method: req.method, path: target.pathname + target.search, headers }, (upRes) => {
       res.writeHead(upRes.statusCode || 502, upRes.headers);
       upRes.pipe(res);
@@ -114,7 +125,7 @@ function startUpstreamProxy(): Promise<{ server: http.Server; port: number }> {
     }
     const host = url.slice(0, lastColon);
     const port = parseInt(url.slice(lastColon + 1), 10) || 80;
-    const connectHost = host === TARGET_HOST ? '127.0.0.1' : host;
+    const connectHost = host === TARGET_ADDRESS ? '127.0.0.1' : host;
     const targetSock = net.connect(port, connectHost, () => {
       clientSock.write('HTTP/1.1 200 Connection Established\r\n\r\n');
       if (head?.length) targetSock.write(head);
@@ -145,13 +156,15 @@ function startUpstreamProxy(): Promise<{ server: http.Server; port: number }> {
  * forwarding — mimics public HTTP proxies that reject CONNECT on port 80.
  * Proves plain-HTTP targets work without ever tunnelling.
  */
-function startForwardOnlyUpstream(): Promise<{ server: http.Server; port: number; connectAttempts: () => number }> {
+function startForwardOnlyUpstream(): Promise<{ server: http.Server; port: number; connectAttempts: () => number; forwarded: () => string }> {
   const { promise, resolve } = Promise.withResolvers<{
     server: http.Server;
     port: number;
     connectAttempts: () => number;
+    forwarded: () => string;
   }>();
   let connects = 0;
+  let absoluteUrl = '';
   const server = http.createServer();
   server.on('connect', (_req, sock) => {
     connects++;
@@ -163,6 +176,7 @@ function startForwardOnlyUpstream(): Promise<{ server: http.Server; port: number
     } catch {}
   });
   server.on('request', (req, res) => {
+    absoluteUrl = req.url || '';
     let target: URL;
     try {
       target = new URL(req.url || '');
@@ -176,9 +190,9 @@ function startForwardOnlyUpstream(): Promise<{ server: http.Server; port: number
       res.end();
       return;
     }
-    const host = target.hostname === TARGET_HOST ? '127.0.0.1' : target.hostname;
+    const host = target.hostname === TARGET_ADDRESS ? '127.0.0.1' : target.hostname;
     const port = parseInt(target.port, 10) || 80;
-    const headers = { ...req.headers, host: target.host, connection: 'close' };
+    const headers = { ...req.headers, connection: 'close' };
     const up = http.request({ host, port, method: req.method, path: target.pathname + target.search, headers }, (upRes) => {
       res.writeHead(upRes.statusCode || 502, upRes.headers);
       upRes.pipe(res);
@@ -192,7 +206,7 @@ function startForwardOnlyUpstream(): Promise<{ server: http.Server; port: number
     req.pipe(up);
   });
   server.listen(0, '127.0.0.1', () => {
-    resolve({ server, port: (server.address() as net.AddressInfo).port, connectAttempts: () => connects });
+    resolve({ server, port: (server.address() as net.AddressInfo).port, connectAttempts: () => connects, forwarded: () => absoluteUrl });
   });
   return promise;
 }
@@ -448,6 +462,7 @@ describe('proxy server', () => {
     let upstream: http.Server;
     let upstreamPort: number;
     let connectAttempts: () => number;
+    let forwarded: () => string;
     let proxy: http.Server;
     let proxyPort: number;
     let health: HealthStore;
@@ -459,7 +474,14 @@ describe('proxy server', () => {
           body += c.toString();
         });
         req.on('end', () => {
-          const data = JSON.stringify({ ok: true, method: req.method, path: req.url, body });
+          const data = JSON.stringify({
+            ok: true,
+            method: req.method,
+            path: req.url,
+            body,
+            host: req.headers.host,
+            hostHeaderCount: req.rawHeaders.filter((header) => header.toLowerCase() === 'host').length,
+          });
           const buf = Buffer.from(data, 'utf-8');
           res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': buf.length.toString() });
           res.end(buf);
@@ -470,6 +492,7 @@ describe('proxy server', () => {
       upstream = up.server;
       upstreamPort = up.port;
       connectAttempts = up.connectAttempts;
+      forwarded = up.forwarded;
 
       db = createDb();
       health = new HealthStore(db, { pruneAfterMs: 0, fatalBanMs: 300_000 });
@@ -497,6 +520,9 @@ describe('proxy server', () => {
       assert.equal(parsed.method, 'GET');
       assert.equal(parsed.path, '/test');
       assert.equal(connectAttempts(), 0);
+      assert.equal(new URL(forwarded()).hostname, TARGET_ADDRESS);
+      assert.equal(parsed.host, `${TARGET_HOST}:${targetPort}`);
+      assert.equal(parsed.hostHeaderCount, 1);
     });
   });
   // ── CONNECT tunnel ───────────────────────────────────────
@@ -787,6 +813,97 @@ describe('proxy server', () => {
       assert.ok(entry.fatalErrors >= 1, 'fatalErrors should be >= 1 after failed request (ECONNREFUSED is fatal)');
 
       badProxy.close();
+    });
+  });
+
+  describe('maxConnections across HTTP and CONNECT', () => {
+    it('holds capacity until a request/tunnel closes and then accepts new work', { timeout: 10_000 }, async () => {
+      const requestArrived = Promise.withResolvers<void>();
+      let heldResponse: http.ServerResponse | undefined;
+      const target = http.createServer((req, res) => {
+        if (req.url === '/hold') {
+          heldResponse = res;
+          requestArrived.resolve();
+        } else {
+          res.end('ok');
+        }
+      });
+      const targetPort = await listen(target);
+      const up = await startUpstreamProxy();
+      const upstream = up.server;
+      const db = createDb();
+      const health = new HealthStore(db, { pruneAfterMs: 0, fatalBanMs: 300_000 });
+      const proxyUrl = `http://127.0.0.1:${up.port}`;
+      health.set(proxyUrl, blankEntry());
+      const proxy = createProxyServer({
+        config: { current: { ...BASE_CONFIG, maxConnections: 1 } },
+        health,
+        getProxies: () => [proxyFromUrl(proxyUrl)],
+      });
+      const proxyPort = await listen(proxy);
+      assert.deepEqual(getProxyConnectionStats(proxy), { active: 0, limit: 1, rejected: 0 });
+      let tunnel: net.Socket | undefined;
+      try {
+        const pending = httpResponseThroughProxy(proxyPort, TARGET_HOST, targetPort, 'GET', '/hold');
+        await requestArrived.promise;
+        const rejectedTunnel = await connectCheck(proxyPort, TARGET_HOST, targetPort);
+        assert.match(rejectedTunnel.status, /503/);
+        const rejectedHttp = await httpResponseThroughProxy(proxyPort, TARGET_HOST, targetPort, 'GET', '/quick');
+        assert.equal(rejectedHttp.statusCode, 503);
+        assert.deepEqual(getProxyConnectionStats(proxy), { active: 1, limit: 1, rejected: 2 });
+
+        heldResponse!.end('held');
+        assert.deepEqual(await pending, { statusCode: 200, body: 'held' });
+
+        const opened = Promise.withResolvers<string>();
+        tunnel = net.connect(proxyPort, '127.0.0.1', () => {
+          tunnel!.write(`CONNECT ${TARGET_HOST}:${targetPort} HTTP/1.1\r\n\r\n`);
+        });
+        let status = '';
+        tunnel.on('data', (chunk: Buffer) => {
+          status += chunk.toString();
+          if (status.includes('\r\n\r\n')) opened.resolve(status);
+        });
+        tunnel.on('error', opened.reject);
+        assert.match(await opened.promise, /HTTP\/1\.1 200/);
+        assert.equal(getProxyConnectionStats(proxy)?.active, 1);
+        const rejectedWhileTunneling = await httpResponseThroughProxy(proxyPort, TARGET_HOST, targetPort, 'GET', '/quick');
+        assert.equal(rejectedWhileTunneling.statusCode, 503);
+        assert.deepEqual(getProxyConnectionStats(proxy), { active: 1, limit: 1, rejected: 3 });
+
+        // Exchange useful bytes before closing so the health classifier does
+        // not (correctly) record this deliberately short tunnel as an early failure.
+        const tunnelData = Promise.withResolvers<string>();
+        tunnel.on('data', (chunk: Buffer) => {
+          if (chunk.toString().includes('HTTP/1.1 200')) tunnelData.resolve(chunk.toString());
+        });
+        tunnel.write(`GET /quick HTTP/1.1\r\nHost: ${TARGET_HOST}\r\nConnection: close\r\n\r\n`);
+        assert.match(await tunnelData.promise, /HTTP\/1\.1 200/);
+
+        const closed = Promise.withResolvers<void>();
+        tunnel.once('close', () => closed.resolve());
+        tunnel.destroy();
+        await closed.promise;
+        // Client-side close can precede the peer's close event by one event-loop turn.
+        let response: { statusCode: number | undefined; body: string } | undefined;
+        for (let i = 0; i < 10; i++) {
+          response = await httpResponseThroughProxy(proxyPort, TARGET_HOST, targetPort, 'GET', '/quick');
+          if (response.statusCode === 200) break;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        assert.deepEqual(response, { statusCode: 200, body: 'ok' });
+        assert.equal(getProxyConnectionStats(proxy)?.active, 0);
+      } finally {
+        tunnel?.destroy();
+        heldResponse?.end();
+        health.stop();
+        await Promise.all([
+          new Promise<void>((resolve) => proxy.close(() => resolve())),
+          new Promise<void>((resolve) => upstream.close(() => resolve())),
+          new Promise<void>((resolve) => target.close(() => resolve())),
+        ]);
+        db.close();
+      }
     });
   });
 });
