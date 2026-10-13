@@ -3,6 +3,7 @@ import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../config/index.js';
 import { createLogger } from '../logger.js';
+import { redactProxy, redactProxyText } from '../proxy/redact.js';
 import { runValidation } from './runner.js';
 import type { ProgressCallback, ValidatorOptions } from './types.js';
 
@@ -231,8 +232,8 @@ Examples:
   const opts: ValidatorOptions = buildOptionsFromConfig(loadConfig(), overrides);
 
   const onProgress: ProgressCallback = (res, _stats) => {
-    if (res.valid) console.log(`[VALID] ${res.proxy}`);
-    else console.log(`[INVALID] ${res.proxy} (${res.error})`);
+    if (res.valid) console.log(`[VALID] ${redactProxy(res.proxy)}`);
+    else console.log(`[INVALID] ${redactProxy(res.proxy)} (${redactProxyText(res.error || 'error')})`);
   };
 
   const result = await validateFile(proxyFile, opts, onProgress);

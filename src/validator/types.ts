@@ -26,4 +26,5 @@ export interface ProxyResult {
   chunks?: number;
 }
 
+/** Receives the raw proxy key for persistence; callers must redact it before displaying. */
 export type ProgressCallback = (result: ProxyResult, stats: { total: number; done: number; valid: number; invalid: number }) => void;

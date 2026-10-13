@@ -1,4 +1,5 @@
 import { createLogger } from '../logger.js';
+import { redactProxy, redactProxyText } from '../proxy/redact.js';
 import { httpCheck } from './checks/http.js';
 import { streamingCheck } from './checks/streaming.js';
 import { parseProxyForTcp, tcpCheck } from './checks/tcp.js';
@@ -225,19 +226,18 @@ export async function runValidation(
 
         try {
           const res = await validateSingleProxy(proxy, opts, abortSignal);
-          const sanitizedProxy = res.proxy.replace(/\/\/([^:/]+):([^@]+)@/, '//***:***@');
-          const displayResult = { ...res, proxy: sanitizedProxy };
+          const displayResult = { ...res, proxy: redactProxy(res.proxy), ...(res.error ? { error: redactProxyText(res.error) } : {}) };
           results.push(displayResult);
           if (res.valid) valid.push(res.proxy);
           else invalid.push({ proxy: res.proxy, reason: res.error || 'error' });
           done++;
-          onProgress?.(displayResult, { total, done, valid: valid.length, invalid: invalid.length });
+          onProgress?.(res, { total, done, valid: valid.length, invalid: invalid.length });
           logger.debug(
             {
-              proxy: sanitizedProxy,
+              proxy: displayResult.proxy,
               valid: res.valid,
               stage: res.stage,
-              error: res.error,
+              error: displayResult.error,
               done,
               total,
               validCount: valid.length,
@@ -247,14 +247,22 @@ export async function runValidation(
           );
         } catch (e: unknown) {
           const errMsg = e instanceof Error ? e.message : String(e);
-          const sanitizedProxy = proxy.replace(/\/\/[^@]*@/, '//***:***@');
-          const r: ProxyResult = { proxy: sanitizedProxy, valid: false, error: errMsg, stage: 'unknown' };
-          results.push(r);
-          invalid.push({ proxy, reason: r.error! });
+          const r: ProxyResult = { proxy, valid: false, error: errMsg, stage: 'unknown' };
+          results.push({ ...r, proxy: redactProxy(proxy), error: redactProxyText(errMsg) });
+          invalid.push({ proxy, reason: errMsg });
           done++;
           onProgress?.(r, { total, done, valid: valid.length, invalid: invalid.length });
           logger.debug(
-            { proxy: sanitizedProxy, valid: false, stage: r.stage, error: r.error, done, total, validCount: valid.length, invalidCount: invalid.length },
+            {
+              proxy: redactProxy(proxy),
+              valid: false,
+              stage: r.stage,
+              error: redactProxyText(errMsg),
+              done,
+              total,
+              validCount: valid.length,
+              invalidCount: invalid.length,
+            },
             'validation error',
           );
         }

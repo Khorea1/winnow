@@ -20,6 +20,27 @@ describe('EventLog', () => {
     assert.equal(e.status, 'attempt');
   });
 
+  it('redacts proxy keys and embedded credentials before storing or notifying', async () => {
+    const log = new EventLog(100);
+    const observed: ProxyEvent[] = [];
+    log.subscribe((event) => observed.push(event));
+    const event = log.push({
+      type: 'http',
+      proxy: 'http://alice:secret@proxy.example:3128',
+      target: 'example.com:443',
+      status: 'failure',
+      error: 'Could not reach http://alice:secret@proxy.example:3128',
+      detail: 'tried alice:secret@proxy.example:3128',
+    });
+    await new Promise<void>((resolve) => process.nextTick(resolve));
+    assert.equal(event.proxy, 'proxy.example:3128');
+    assert.equal(event.error, 'Could not reach proxy.example:3128');
+    assert.equal(event.detail, 'tried proxy.example:3128');
+    assert.deepEqual(log.recent(1), [event]);
+    assert.deepEqual(observed, [event]);
+    assert.ok(!JSON.stringify(event).includes('secret'));
+  });
+
   it('push increments id', () => {
     const log = new EventLog(100);
     assert.equal(log.push({ type: 'connect', proxy: 'p1', target: 't1', status: 'attempt' }).id, 1);

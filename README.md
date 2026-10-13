@@ -187,6 +187,8 @@ Stages abort early on failure and on `AbortSignal`. The CLI flags mirror the das
 
 The dashboard is a single `dashboard.html` served at `/dashboard`, with a live SSE feed at `/events`. The server emits `health:update` (per proxy/target), `proxy:event` (ban, freeze, unban, retry, healthcheck, pool status, validation progress), `proxy:removed`, and `validation:*` events. The UI auto-detects language (Portuguese or English) from the browser, shows live pool stats, a spectrum bar of sample proxy health, a score-sorted proxy table, and a one-click validation runner.
 
+Dashboard stats, event logs, and SSE expose proxy identifiers as `host[:port]`, without credentials. SQLite health keys and the proxy file retain the original authenticated URL. Removing a proxy by its displayed identifier removes all entries matching that host and port, including entries with different credentials.
+
 CSP is set on the dashboard response; SSE connections are capped at 100 clients to bound resource use.
 
 ---

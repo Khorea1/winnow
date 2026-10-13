@@ -298,3 +298,30 @@ describe('ensureStarEntry', () => {
     health.stop();
   });
 });
+
+describe('health:update', () => {
+  it('emits a redacted identifier while retaining the credentialed persistence key', async () => {
+    const db = new Database(':memory:');
+    db.exec(
+      `CREATE TABLE proxy_health (proxy TEXT NOT NULL, target TEXT NOT NULL DEFAULT '*', errors INTEGER NOT NULL DEFAULT 0, successes INTEGER NOT NULL DEFAULT 0, latency INTEGER NOT NULL DEFAULT 9999, banned_until INTEGER NOT NULL DEFAULT 0, last_ok INTEGER NOT NULL DEFAULT 0, fatal_errors INTEGER NOT NULL DEFAULT 0, frozen_until INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (proxy, target))`,
+    );
+    db.exec(
+      'CREATE TABLE validation_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, started INTEGER NOT NULL, finished INTEGER, total INTEGER NOT NULL DEFAULT 0, passed INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0, exit_code INTEGER)',
+    );
+    const health = new HealthStore(db, { pruneAfterMs: 0, fatalBanMs: 300000 });
+    try {
+      const raw = 'http://alice:secret@proxy.example:3128';
+      const updates: { proxy: string; target: string }[] = [];
+      health.on('health:update', (update) => updates.push(update));
+      health.recordSuccess(raw, 'example.com:443', 100);
+      await new Promise<void>((resolve) => process.nextTick(resolve));
+      assert.equal(health.get(raw)?.successes, 1);
+      assert.ok(updates.length > 0);
+      assert.ok(updates.every((update) => update.proxy === 'proxy.example:3128'));
+      assert.ok(updates.some((update) => update.target === 'example.com:443'));
+    } finally {
+      health.stop();
+      db.close();
+    }
+  });
+});

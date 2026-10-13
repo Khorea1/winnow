@@ -4,6 +4,7 @@ import type Database from 'better-sqlite3';
 import { type HealthRowInput, insertHealth, loadHealth, removeProxyHealth } from '../db/index.js';
 import { EventLog } from '../events.js';
 import { createLogger } from '../logger.js';
+import { redactProxy, redactProxyText } from '../proxy/redact.js';
 import { applyFailure, applySuccess, classifyError, type HealthEntry } from './classify.js';
 
 const logger = createLogger('health');
@@ -133,7 +134,7 @@ export class HealthStore extends EventEmitter {
       const proxy = key.slice(0, sep);
       const target = key.slice(sep + 1);
       try {
-        this.emit('health:update', { proxy, target, time: now });
+        this.emit('health:update', { proxy: redactProxy(proxy), target, time: now });
       } catch {
         // listener errors never crash the app
       }
@@ -203,7 +204,7 @@ export class HealthStore extends EventEmitter {
         : typeof err === 'object' && err !== null
           ? String((err as Record<string, unknown>).message ?? String(err))
           : String(err);
-    logger.warn({ proxy, target: target || '*', errorClass, error: errMsg }, 'failure recorded');
+    logger.warn({ proxy: redactProxy(proxy), target: target || '*', errorClass, error: redactProxyText(errMsg) }, 'failure recorded');
     if (!wasBanned && star.bannedUntil > now) {
       EventLog.safePush(this._eventLog, {
         type: 'ban',
@@ -370,7 +371,7 @@ export class HealthStore extends EventEmitter {
             removeProxyHealth(this.db, p);
           } catch (e: unknown) {
             failed.push(p);
-            logger.warn({ proxy: p, error: e instanceof Error ? e.message : String(e) }, 'delete health error');
+            logger.warn({ proxy: redactProxy(p), error: redactProxyText(e instanceof Error ? e.message : String(e)) }, 'delete health error');
           }
         }
       };

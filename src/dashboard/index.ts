@@ -10,6 +10,7 @@ import { EventLog, type ProxyEvent } from '../events.js';
 import { type HealthEntry, HealthStore } from '../health/index.js';
 import { createLogger } from '../logger.js';
 import { parseLine } from '../proxy/dial.js';
+import { redactProxy, redactProxyText } from '../proxy/redact.js';
 import { isBlockedAfterDns, isBlockedTarget } from '../proxy/ssrf.js';
 import { buildOptionsFromConfig } from '../validator/index.js';
 import { runValidation } from '../validator/runner.js';
@@ -92,23 +93,6 @@ function isSafeProxyFile(p: string, allowedDir: string): boolean {
     return false;
   }
 }
-function sanitizeProxyKey(key: string): string {
-  try {
-    const u = new URL(key);
-    u.username = '';
-    u.password = '';
-    // URL class adds trailing slash, remove it; also strip protocol prefix for consistent comparison
-    return u
-      .toString()
-      .replace(/\/$/, '')
-      .replace(/^[a-z]+:\/\//, '');
-  } catch {
-    // URL parsing failed — likely protocol-less string with credentials
-    // Strip user:password@ prefix if present
-    return key.replace(/^[^@]*@/, '');
-  }
-}
-
 function respondJson(res: ServerResponse, data: unknown, status = 200) {
   try {
     if (res.headersSent) {
@@ -339,7 +323,7 @@ export function registerDashboard(
             const kept = lines.filter((line) => {
               const parsed = parseLine(line);
               if (!parsed) return true; // keep comments/blank/unparsable lines untouched
-              if (sanitizeProxyKey(parsed.raw) === sanitizeProxyKey(key)) {
+              if (redactProxy(parsed.raw) === redactProxy(key)) {
                 removedFromFile = true;
                 return false;
               }
@@ -354,7 +338,7 @@ export function registerDashboard(
           }
           let removedFromHealth = false;
           for (const [raw] of health.entries()) {
-            if (sanitizeProxyKey(raw) === sanitizeProxyKey(key)) {
+            if (redactProxy(raw) === redactProxy(key)) {
               health.delete(raw);
               removedFromHealth = true;
             }
@@ -364,7 +348,7 @@ export function registerDashboard(
             res.end(JSON.stringify({ error: 'Proxy not found' }));
             return;
           }
-          const safeKey = sanitizeProxyKey(key);
+          const safeKey = redactProxy(key);
           EventLog.safePush(eventLog, { type: 'pool', proxy: safeKey, target: '', status: 'info', detail: 'removed via dashboard' });
           broadcast(sseClients, 'proxy:removed', { key: safeKey });
           respondJson(res, { removed: true, key: safeKey, removedFromFile, removedFromHealth });
@@ -544,7 +528,7 @@ export function registerDashboard(
             const frozen = h.frozenUntil > now;
             const banned = now < h.bannedUntil;
             const score = frozen || banned ? Infinity : HealthStore.computeScore(h, now);
-            return { proxy: sanitizeProxyKey(raw), ...h, score, banned, frozen };
+            return { proxy: redactProxy(raw), ...h, score, banned, frozen };
           })
           .sort((a, b) => a.score - b.score)
           .slice(0, 50);
@@ -657,15 +641,15 @@ export function registerDashboard(
           ctx.health.recordFailure(result.proxy, undefined, err, ctx.cfgRef.current, now);
         }
 
-        const line = result.valid
-          ? `[VALID] ${result.proxy} (${result.stage})`
-          : `[INVALID] ${result.proxy} - ${result.error || 'error'} (${result.stage || '?'})`;
+        const safeProxy = redactProxy(result.proxy);
+        const safeError = result.error ? redactProxyText(result.error) : result.error;
+        const line = result.valid ? `[VALID] ${safeProxy} (${result.stage})` : `[INVALID] ${safeProxy} - ${safeError || 'error'} (${result.stage || '?'})`;
 
         broadcast(ctx.sseClients, 'validation:progress', {
           jobId: runId,
-          proxy: result.proxy,
+          proxy: safeProxy,
           valid: result.valid,
-          error: result.error,
+          error: safeError,
           stage: result.stage,
           done: stats.done,
           total: stats.total,
@@ -730,9 +714,10 @@ export function registerDashboard(
         finishValidationRun(ctx.db, runId, 0, 0, 0, 130);
         broadcast(ctx.sseClients, 'validation:complete', { jobId: runId, exitCode: 130, total: 0, passed: 0, failed: 0, stopped: true });
       } else {
-        logger.warn({ error: errMsg }, 'validation error');
+        const safeError = redactProxyText(errMsg);
+        logger.warn({ error: safeError }, 'validation error');
         finishValidationRun(ctx.db, runId, 0, 0, 0, 1);
-        broadcast(ctx.sseClients, 'validation:complete', { jobId: runId, error: errMsg, exitCode: 1 });
+        broadcast(ctx.sseClients, 'validation:complete', { jobId: runId, error: safeError, exitCode: 1 });
       }
     } finally {
       _validationRunning = false;
