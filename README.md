@@ -45,11 +45,11 @@ The name is also a deliberate counterweight to tools that call themselves "rotat
 - **Fatal vs transient failure classification** — connection refused, DNS failure, TLS/cert errors, SOCKS protocol errors → *fatal*; timeouts, upstream 5xx, early close, resets → *transient. Each class has its own ban formula.*
 - **Exponential ban backoff** — transient failures ban with `banBaseMs × banMultiplier^(errors-1)`, capped at `banMaxMs`. Operators tune every duration in `config.json` without touching code.
 - **Fatal freeze** — after `maxFatalErrors` fatal events, the proxy is frozen for `fatalBanMs × 3` and excluded from rotation until thawed. Survives restarts via SQLite.
-- **Bootstrap thaw** — on boot, frozen rows are demoted to a finite ban (so the proxy gets another chance) and `fatalErrors` is reduced by 1; one more fatal re-freezes.
+- **Bootstrap thaw** — on boot, frozen rows are demoted to a finite ban (so the proxy gets another chance) and `fatalErrors` decreases by 1; one more fatal re-freezes.
 - **Auto-pruning of the pool** — proxies unseen-healthy beyond `pruneAfterMs` are demoted from the rotation. The validator can rewrite the proxy file to keep only validated entries (`validationPrune`).
 - **Hot-reloaded proxy pool** — the proxy file is watched with `fs.watch` (inotify on Linux). Append a line, save the file — the new proxy is live within milliseconds, with zero restart.
-- **TLS integrity verification** — health checks against TLS targets perform a real handshake and validate the certificate chain. Self-signed and MITM certificates are **rejected by default**; opt in to lenient mode with `validationInsecure`/`--insecure` or opt into strict validation with `validationStrictTLS`/`--strict-tls`.
-- **Multi-stage validation pipeline** — progressive stages: TCP reachability → HTTP request/response via proxy → explicit TLS check → light streaming → heavy streaming (strict mode only). Run standalone from the CLI or trigger a run from the dashboard.
+- **TLS integrity verification** — health checks against TLS targets perform a real handshake and validate the certificate chain. Self-signed and MITM certificates are **rejected by default**; use `validationStrictTLS: false` to relax health-check handshake enforcement or `validationInsecure`/`--insecure` to relax validator certificate verification.
+- **Multi-stage validation pipeline** — progressive stages: TCP reachability → HTTP request/response via proxy → explicit TLS check when enabled → light streaming → heavy streaming (strict mode only). Run standalone from the CLI or trigger a run from the dashboard.
 - **Real-time dashboard** — SSE-powered web UI with live event log, pool stats, score-sorted proxy table, spectrum bar, and validation runner. English and Portuguese, auto-detected from the browser.
 - **REST API** — stats, health data, proxy removal, config hot-reload, validation runs.
 - **Prometheus metrics** — authenticated `/metrics` exposes pool health, active connections, saturation rejects, and request totals with fixed cardinality and no proxy addresses.
@@ -116,23 +116,23 @@ otherwise                → latency + errors × 2000 + fatalErrors × 10000 −
 
 - `latency` is an EMA: `latency = latency × 0.7 + sample × 0.3` (and adopts the first sample outright).
 - `errors` (transient count) decays by one on each success — a recovery earns trust back.
-- `fatalErrors` is durable; boot-time thaw decreases it by one for each live frozen row.
+- `fatalErrors` is persisted; each success reduces it by 1, as does the boot-time thaw for frozen rows.
 - `successes` is a long-run trust signal — many successes make a proxy resilient to one bad sample.
 
 The net behavior: a fast, reliable proxy scores low and stays at the top of the rotation; a slow or error-prone proxy scores high and gets pushed down; a frozen or banned proxy is unreachable from the picker entirely until it thaws.
 
 ### Failure classification — fatal vs transient
 
-`classifyError` (in `src/health/index.ts`) inspects `err.code`, `err.message`, and SOCKS reply bytes:
+`classifyError` (in `src/health/classify.ts`) inspects `err.code`, `err.message`, and SOCKS reply bytes:
 
 | Class | Cause examples | Effect |
 |---|---|---|
-| **Fatal** | `ECONNREFUSED`, `ENOTFOUND`, `ERR_TLS_*`, SOCKS replies 0x01–0x05/0x07/0x08, TLS/SSL/certificate/SOCKS protocol error messages | `fatalErrors++`; if `< maxFatalErrors` → banned for `fatalBanMs`; at `maxFatalErrors` → frozen for `fatalBanMs × 3` |
+| **Fatal** | `ECONNREFUSED`, `ENOTFOUND`, `ERR_TLS_*`, SOCKS replies 0x01–0x05/0x07/0x08, message regex `\b(TLS\|SSL\|certificate\|self-signed\|handshake\|SOCKS\|protocol error)\b` | `fatalErrors++`; if `< maxFatalErrors` → banned for `fatalBanMs`; at `maxFatalErrors` → frozen for `fatalBanMs × 3` |
 | **Transient** | `ETIMEDOUT`, `ECONNRESET`, upstream 5xx, `socket hang up`, early close, read resets | `errors++`; banned for `transientBanMs(errors)` (exponential, capped at `banMaxMs`) |
 
 Transient ban duration: `ban = min(banBaseMs × banMultiplier^(min(errors-1, 6)), banMaxMs)`. With defaults (30s × 2^(k-1), cap 3min): 30s → 60s → 120s → 180s → 180s …
 
-A success decays transient `errors` by 1 and clears `bannedUntil`. During boot thaw, each live frozen row's `fatalErrors` count is decreased by 1, bounded at zero, so one more fatal can re-freeze it.
+A success decays both transient `errors` and `fatalErrors` by 1 and clears `bannedUntil`. On boot, `_pruneFrozenOnBoot` converts any frozen row into a finite `min(pruneAfterMs, fatalBanMs × 3)` ban and reduces `fatalErrors` by 1, so one more fatal re-freezes a proxy previously at the threshold.
 
 ### Hot-reloaded proxy pool
 
@@ -148,16 +148,16 @@ Comments (lines starting with `#`) and blank lines are preserved across the rewr
 | **Validate** | Run `npm run validator` (CLI) or `POST /api/validate` (dashboard). Each proxy passes through TCP → HTTP → optional TLS → optional streaming stages. Successful proxies record a success; failed proxies record a failure against `*`. With `validationPrune: true`, the proxy file is rewritten to keep only validated entries (atomic temp+rename; nothing is lost if zero survive — the original is kept). |
 | **Remove** | `DELETE /api/proxy?key=<sanitized-url>` rewrites the proxy file without the line, deletes its health row, and broadcasts `proxy:removed` over SSE. Manual `proxies.txt` edits work too via the file watcher. |
 | **Freeze / ban** | Automatic. Repeated fatal errors freeze the proxy for `fatalBanMs × 3`. Transient errors ban it on an exponential curve. Frozen/banned proxies are invisible to the picker and shown distinctly in the dashboard. |
-| **Thaw** | On boot, live frozen rows are demoted to a finite ban and their `fatalErrors` count is decreased by one (not below zero). During a run, a frozen proxy stays frozen — there is no mid-run unban, by design: a structurally dead proxy should not be retried until the operator restarts or prunes. |
+| **Thaw** | On boot, frozen rows are demoted to a finite ban and `fatalErrors` decreases by 1. During a run, a frozen proxy stays frozen — there is no mid-run unban, by design: a structurally dead proxy should not be retried until the operator restarts or prunes. |
 
 ### TLS verification (anti-MITM)
 
 There are two layers of TLS checking:
 
-1. **In the live proxy server (`src/proxy/tls.ts`)** — `tlsHandshake` connects with `rejectUnauthorized` honored by default. For health-check ticks, if the target is TLS (port 443), Winnow performs a full handshake and rejects when `validationStrictTLS` is set. Self-signed detection lives in `isSoftTlsError`, which recognizes soft TLS failures including self-signed and untrusted certificates.
-2. **In the validator pipeline (`src/validator/checks/tls.ts`)** — when `--strict-tls` (or `validationStrictTLS: true`) is set, the validator dials an explicit TLS host (`validationTlsHost`, default `www.google.com:443`) through the proxy, handshakes, and rejects any unauthorized result. The proxy is marked invalid at the `tls` stage. Without strict mode, the TLS check is informational; with it, a MITM'ing or misconfigured proxy cannot pass validation.
+1. **In periodic health checks (`src/proxy/rotator.ts` and `src/proxy/tls.ts`)** — `tlsHandshake` honors `rejectUnauthorized` unless called with `insecure: true`. For health-check ticks against TLS ports, `validationStrictTLS: true` enforces certificate verification; when false, an unauthorized result is still recorded as a failed health check. `isSoftTlsError` recognizes authorization errors such as `self signed`, `unable to verify`, `unable to get local issuer`, `certificate has expired`, and `depth_zero_self_signed`.
+2. **In the validator pipeline (`src/validator/checks/tls.ts`)** — when `--strict-tls` (or `validationStrictTLS: true`) is set, the validator dials an explicit TLS host (`validationTlsHost`, default `www.google.com:443`) through the proxy, handshakes, and rejects any unauthorized result. The proxy is marked invalid at the `tls` stage. With `validationStrictTLS: false`, this explicit TLS stage is skipped.
 
-**Built-in defaults:** `validationInsecure: false` keeps certificate verification enabled, and `validationStrictTLS: true` gates validation on the explicit TLS stage. These values come from the code defaults; an operator's `config.json` can override them.
+**Defaults:** `validationInsecure: false` (validator certificate verification is enabled) and `validationStrictTLS: true` (periodic TLS health checks enforce certificates and the validator runs the explicit TLS stage). Keep both defaults to enforce strict certificate validation.
 
 ### Periodic health checks
 
@@ -182,7 +182,7 @@ The check is skippable if no targets are configured, or if `healthCheckInterval`
 | `quick` (default) | TCP + HTTP `/ip` (status, latency, content, optional anonymity) |
 | `standard` | quick + light streaming (TTFB, chunk cadence, max gap) |
 | `stream` | standard alias |
-| `strict` | standard + explicit TLS check + heavy streaming |
+| `strict` | standard + heavy streaming (plus the explicit TLS check when `validationStrictTLS` is enabled) |
 
 Stages abort early on failure and on `AbortSignal`. The CLI flags mirror the dashboard's `POST /api/validate` overrides.
 
