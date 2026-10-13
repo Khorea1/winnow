@@ -34,8 +34,8 @@ export async function tlsCheck(
 
   return {
     authorized: res.authorized,
-    error: res.authorizationError,
+    ...(res.authorizationError ? { error: res.authorizationError } : {}),
     selfSigned,
-    protocol: res.protocol,
+    ...(res.protocol ? { protocol: res.protocol } : {}),
   };
 }

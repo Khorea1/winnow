@@ -50,7 +50,7 @@ export function pickMany(proxies: ParsedProxy[], health: HealthStore, n: number,
   const top = alive.slice(0, poolSize);
   for (let i = top.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
-    [top[i], top[j]] = [top[j], top[i]];
+    [top[i], top[j]] = [top[j]!, top[i]!];
   }
   return top;
 }
@@ -156,7 +156,7 @@ export async function tryWithRetry(
         target: targetKey,
         status: 'attempt',
         error: errMsg,
-        errorCode: errCode,
+        ...(errCode ? { errorCode: errCode } : {}),
         errorClass: errClass,
         detail: `attempt ${attemptNum + 1}/${candidates.length}`,
       });
@@ -171,6 +171,7 @@ export async function tryWithRetry(
 export async function healthCheckTick(proxies: ParsedProxy[], health: HealthStore, config: RotatorConfig, targets: string[], eventLog?: EventLog) {
   if (!targets.length) return;
   const target = targets[Math.floor(Math.random() * targets.length)];
+  if (target === undefined) return;
   const parsed = parseHostPort(target, 80);
   if (!parsed) return;
   const toCheck = pickMany(proxies, health, config.healthCheckCount, target, config.maxErrors + 10);
@@ -218,7 +219,7 @@ export async function healthCheckTick(proxies: ParsedProxy[], health: HealthStor
         target,
         status: 'failure',
         error: errMsg,
-        errorCode: errCode,
+        ...(errCode ? { errorCode: errCode } : {}),
         errorClass: classifyError(e),
       });
       health.recordFailure(p.raw, target, e, config, Date.now());

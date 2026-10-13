@@ -168,7 +168,7 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
           target: targetKey,
           status: 'failure',
           error: errMsg,
-          errorCode: errCode,
+          ...(errCode ? { errorCode: errCode } : {}),
           errorClass: classifyError(err),
         });
       };
@@ -243,7 +243,7 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
         target: targetKey,
         status: 'failure',
         error: errMsg,
-        errorCode: errCode,
+        ...(errCode ? { errorCode: errCode } : {}),
       });
       try {
         clientSock.write('HTTP/1.1 502 Bad Gateway\r\n\r\n');
@@ -316,7 +316,7 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
           target: targetKey,
           status: 'failure',
           error: errMsg,
-          errorCode: errCode,
+          ...(errCode ? { errorCode: errCode } : {}),
           errorClass: classifyError(err),
           bytes: upstreamBytes + requestBodyBytes,
         });
@@ -330,10 +330,10 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
       // Send request to upstream — preserve original header casing via rawHeaders
       const pathAndQuery = targetUrl.pathname + targetUrl.search;
       let reqHeaderLines = '';
-      for (let i = 0; i < req.rawHeaders.length; i += 2) {
-        const k = req.rawHeaders[i].replace(/[\r\n]/g, '').trim();
+      for (let i = 0; i + 1 < req.rawHeaders.length; i += 2) {
+        const k = req.rawHeaders[i]!.replace(/[\r\n]/g, '').trim();
         if (k.toLowerCase() in STRIPPED_REQUEST_HEADERS) continue;
-        const v = req.rawHeaders[i + 1].replace(/[\r\n]/g, '').trim();
+        const v = req.rawHeaders[i + 1]!.replace(/[\r\n]/g, '').trim();
         reqHeaderLines += `${k}: ${v}\r\n`;
       }
       // Use targetUrl.host to include port when non-default (e.g. Host: example.com:8080)
@@ -449,6 +449,7 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
             let connectionValues: string[] = [];
             for (let i = 1; i < lines.length; i++) {
               const line = lines[i];
+              if (line === undefined) continue;
               const sep = line.indexOf(':');
               if (sep === -1) continue;
               const k = line.slice(0, sep).trim().toLowerCase();
@@ -463,6 +464,7 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
             const respHeaders: Record<string, string | string[]> = {};
             for (let i = 1; i < lines.length; i++) {
               const line = lines[i];
+              if (line === undefined) continue;
               const sep = line.indexOf(':');
               if (sep === -1) continue;
               const k = line.slice(0, sep).trim();
@@ -569,7 +571,7 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
       }
       const errCode = e != null && typeof e === 'object' && 'code' in e ? String((e as Record<string, unknown>).code) : undefined;
       logger.error({ reqId, target: targetKey, error: errMsg }, 'http all retries failed');
-      EventLog.safePush(el, { type: 'http', proxy: '(all)', target: targetKey, status: 'failure', error: errMsg, errorCode: errCode });
+      EventLog.safePush(el, { type: 'http', proxy: '(all)', target: targetKey, status: 'failure', error: errMsg, ...(errCode ? { errorCode: errCode } : {}) });
       try {
         res.writeHead(502, { 'Content-Type': 'text/plain' });
         res.end('Bad Gateway');

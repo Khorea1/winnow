@@ -18,24 +18,31 @@ function parseArgv(args: string[]): Record<string, string | number | boolean> {
   const r: Record<string, string | number | boolean> = {};
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
+    if (a === undefined) continue;
+    const nextValue = (): string | true => {
+      const next = args[i + 1];
+      if (next === undefined || next.startsWith('-')) return true;
+      i++;
+      return next;
+    };
     if (a === '--help' || a === '-h') {
       r.help = true;
       continue;
     }
     const m = a.match(/^--(.+?)(?:=(.*))?$/);
     if (m) {
-      const k = m[1].replace(/-/g, '');
-      r[k] = m[2] ?? (i + 1 < args.length && !args[i + 1].startsWith('-') ? args[++i] : true);
+      const k = m[1]!.replace(/-/g, '');
+      r[k] = m[2] ?? nextValue();
       continue;
     }
     if (a.startsWith('-') && a.length === 2) {
       const ALIASES: Record<string, string> = { p: 'port', f: 'proxyfile', c: 'config', v: 'validationmode', t: 'timeout', d: 'datadir' };
-      const alias = ALIASES[a[1]];
+      const alias = ALIASES[a[1]!];
       if (!alias) {
         console.warn(`Unknown flag: ${a}`);
         continue;
       }
-      r[alias] = i + 1 < args.length && !args[i + 1].startsWith('-') ? args[++i] : true;
+      r[alias] = nextValue();
     }
   }
   return r;

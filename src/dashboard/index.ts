@@ -448,7 +448,8 @@ export function registerDashboard(
         if (typeof custom.maxGap === 'number') custom.maxGap = Math.max(0, Math.min(60000, custom.maxGap));
         if (custom.tlsPort !== undefined) custom.tlsPort = Math.max(1, Math.min(65535, Math.floor(custom.tlsPort)));
         if (custom.tlsHost !== undefined) {
-          custom.tlsHost = typeof custom.tlsHost === 'string' ? custom.tlsHost.trim() : undefined;
+          if (typeof custom.tlsHost === 'string') custom.tlsHost = custom.tlsHost.trim();
+          else delete custom.tlsHost;
         }
         if (!custom.tlsHost) {
           delete custom.tlsHost;

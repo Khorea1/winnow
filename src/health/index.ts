@@ -30,7 +30,7 @@ export class HealthStore extends EventEmitter {
   private _dirty: Set<string> = new Set();
   private _deleted: Set<string> = new Set();
   private _timer: NodeJS.Timeout;
-  private _eventLog?: EventLog;
+  private _eventLog: EventLog | undefined;
   private _pendingUpdates: Set<string> = new Set();
   private _pendingEmitScheduled = false;
 

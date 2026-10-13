@@ -12,13 +12,13 @@
     "validator": "node dist/validator/index.js",
     "dev": "tsx watch src/index.ts",
     "test": "tsx --test src/__tests__/*.test.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --project tsconfig.scripts.json",
     "lint": "biome check src/",
     "lint:fix": "biome check --write src/",
     "stop": "node scripts/stop.mjs",
     "stop:docker": "docker compose stop",
     "format": "biome format --write src/",
-    "check": "biome check src/ && tsc --noEmit && tsx --test src/__tests__/*.test.ts"
+    "check": "biome check src/ && npm run typecheck && tsx --test src/__tests__/*.test.ts"
   },
   "engines": {
     "node": ">=22"

@@ -36,8 +36,8 @@ function normalizeIPv6(host: string): string {
   for (const g of groups) {
     const ipv4Match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(g);
     if (ipv4Match) {
-      const h1 = (parseInt(ipv4Match[1], 10) << 8) + parseInt(ipv4Match[2], 10);
-      const h2 = (parseInt(ipv4Match[3], 10) << 8) + parseInt(ipv4Match[4], 10);
+      const h1 = (parseInt(ipv4Match[1]!, 10) << 8) + parseInt(ipv4Match[2]!, 10);
+      const h2 = (parseInt(ipv4Match[3]!, 10) << 8) + parseInt(ipv4Match[4]!, 10);
       result.push(h1.toString(16), h2.toString(16));
     } else {
       result.push(g);
@@ -59,7 +59,7 @@ export function isBlockedTarget(host: string): boolean {
   // IPv4 checks
   const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(cleanHost);
   if (m) {
-    const [a, b] = [parseInt(m[1], 10), parseInt(m[2], 10)];
+    const [a, b] = [parseInt(m[1]!, 10), parseInt(m[2]!, 10)];
     if (a === 127 || a === 0) return true; // loopback / 0.0.0.0/8
     if (a === 169 && b === 254) return true; // link-local (incl. AWS IMDS)
     if (a === 10) return true; // RFC 1918 10/8
@@ -78,8 +78,8 @@ export function isBlockedTarget(host: string): boolean {
     // - Expanded forms (0:0:0:0:0:ffff:1.2.3.4)
     // - IPv4-compatible (::1.2.3.4)
     const v4Match = lower.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
-    if (v4Match && net.isIPv4(v4Match[1])) {
-      return isBlockedTarget(v4Match[1]);
+    if (v4Match && net.isIPv4(v4Match[1]!)) {
+      return isBlockedTarget(v4Match[1]!);
     }
 
     // Hex-encoded IPv4-mapped IPv6 (::ffff:7f00:1 → 127.0.0.1)
@@ -95,7 +95,7 @@ export function isBlockedTarget(host: string): boolean {
       }
       // Hex-encoded: ::ffff:7f00:1 → 127.0.0.1
       if (/^[0-9a-f]{1,4}:[0-9a-f]{1,4}$/.test(v4part)) {
-        const [h1, h2] = v4part.split(':').map((h) => parseInt(h || '0', 16));
+        const [h1 = 0, h2 = 0] = v4part.split(':').map((h) => parseInt(h || '0', 16));
         const a = (h1 >> 8) & 0xff;
         const b = h1 & 0xff;
         const c = (h2 >> 8) & 0xff;

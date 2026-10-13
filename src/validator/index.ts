@@ -106,6 +106,7 @@ export async function cliMain() {
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
+    if (a === undefined) continue;
     if (a === '-h' || a === '--help' || a === '--ajuda') {
       console.log(`
 Usage: validator [options] [<proxy-file>]

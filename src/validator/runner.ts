@@ -204,6 +204,7 @@ export async function runValidation(
     try {
       while (idx < queue.length && !abortSignal?.aborted) {
         const proxy = queue[idx++];
+        if (proxy === undefined) break;
 
         // Per-worker throttle — with N concurrent workers, effective rate is N / throttle
         if (opts.throttle > 0) {
