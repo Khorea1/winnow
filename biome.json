@@ -48,7 +48,7 @@
       "**/public/**/*.js",
       "**/public/**/*.html",
       "**/public/**/*.css",
-      "!**/public/html/**",
+      "!**/public/html",
       "!**/node_modules",
       "!**/dist"
     ]
