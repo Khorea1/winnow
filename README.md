@@ -320,7 +320,7 @@ Any flag left unset falls back to the matching `validation*` field in `config.js
 | `/dashboard.css` | GET | Dashboard stylesheet |
 | `/dashboard.js` | GET | Dashboard ES module |
 | `/dashboard-utils.js` | GET | Dashboard classify/filter/sort helpers |
-| `/__stats` | GET | JSON stats: total, alive, top-50 proxies by score, current config snapshot |
+| `/__stats` | GET | JSON stats: total, alive, top-50 proxies by score, retries/timeout, aggregate request metrics, and `connections` (`active`, live `limit`, cumulative `rejected` on HTTP/CONNECT saturation) |
 | `/api/config` | GET | Read current config |
 | `/api/config` | POST | Hot-reload config (sanitized, allow-listed keys only) |
 | `/api/proxy?key=<key>` | DELETE | Remove a proxy (rewrites the proxy file atomically + clears health row + SSE `proxy:removed`) |

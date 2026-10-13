@@ -7,7 +7,7 @@ import Database from 'better-sqlite3';
 import { DEFAULTS } from '../config/index.js';
 import { blankEntry, HealthStore } from '../health/index.js';
 import type { ParsedProxy } from '../proxy/dial.js';
-import { createProxyServer } from '../proxy/server.js';
+import { createProxyServer, getProxyConnectionStats } from '../proxy/server.js';
 
 /**
  * Hostname used as the target in tests. Not blocked by SSRF (not a private IP
@@ -841,6 +841,7 @@ describe('proxy server', () => {
         getProxies: () => [proxyFromUrl(proxyUrl)],
       });
       const proxyPort = await listen(proxy);
+      assert.deepEqual(getProxyConnectionStats(proxy), { active: 0, limit: 1, rejected: 0 });
       let tunnel: net.Socket | undefined;
       try {
         const pending = httpResponseThroughProxy(proxyPort, TARGET_HOST, targetPort, 'GET', '/hold');
@@ -849,6 +850,7 @@ describe('proxy server', () => {
         assert.match(rejectedTunnel.status, /503/);
         const rejectedHttp = await httpResponseThroughProxy(proxyPort, TARGET_HOST, targetPort, 'GET', '/quick');
         assert.equal(rejectedHttp.statusCode, 503);
+        assert.deepEqual(getProxyConnectionStats(proxy), { active: 1, limit: 1, rejected: 2 });
 
         heldResponse!.end('held');
         assert.deepEqual(await pending, { statusCode: 200, body: 'held' });
@@ -864,8 +866,10 @@ describe('proxy server', () => {
         });
         tunnel.on('error', opened.reject);
         assert.match(await opened.promise, /HTTP\/1\.1 200/);
+        assert.equal(getProxyConnectionStats(proxy)?.active, 1);
         const rejectedWhileTunneling = await httpResponseThroughProxy(proxyPort, TARGET_HOST, targetPort, 'GET', '/quick');
         assert.equal(rejectedWhileTunneling.statusCode, 503);
+        assert.deepEqual(getProxyConnectionStats(proxy), { active: 1, limit: 1, rejected: 3 });
 
         // Exchange useful bytes before closing so the health classifier does
         // not (correctly) record this deliberately short tunnel as an early failure.
@@ -888,6 +892,7 @@ describe('proxy server', () => {
           await new Promise((resolve) => setTimeout(resolve, 10));
         }
         assert.deepEqual(response, { statusCode: 200, body: 'ok' });
+        assert.equal(getProxyConnectionStats(proxy)?.active, 0);
       } finally {
         tunnel?.destroy();
         heldResponse?.end();

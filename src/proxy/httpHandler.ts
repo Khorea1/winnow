@@ -34,6 +34,7 @@ export function handleHttp(ctx: HttpHandlerCtx, req: IncomingMessage, res: Serve
   let targetKey = '';
   const conn = ctx.connections;
   if (conn.count >= conn.max) {
+    conn.rejected++;
     try {
       res.writeHead(503, { 'Content-Type': 'text/plain' });
       res.end('Service Unavailable');

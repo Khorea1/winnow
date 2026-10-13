@@ -17,6 +17,7 @@ const logger = createLogger('proxy');
 
 export interface ConnectionTracker {
   count: number;
+  rejected: number;
   max: number;
 }
 
@@ -51,6 +52,7 @@ export function handleConnect(ctx: ConnectHandlerCtx, req: IncomingMessage, clie
   }
   const conn = ctx.connections;
   if (conn.count >= conn.max) {
+    conn.rejected++;
     try {
       clientSock.end('HTTP/1.1 503 Service Unavailable\r\n\r\n');
     } catch {

@@ -12,6 +12,7 @@ import { type HealthEntry, HealthStore } from '../health/index.js';
 import { createLogger } from '../logger.js';
 import { parseLine } from '../proxy/dial.js';
 import { redactProxy } from '../proxy/redact.js';
+import { getProxyConnectionStats } from '../proxy/server.js';
 import { resolveTargetAddress } from '../proxy/ssrf.js';
 import { buildOptionsFromConfig } from '../validator/index.js';
 import { runValidation } from '../validator/runner.js';
@@ -299,8 +300,11 @@ export function registerDashboard(
   _clearPoolInterval = () => clearInterval(poolInterval);
 
   const origListeners = server.listeners('request');
-
-  server.prependListener('request', async (req: IncomingMessage, res: ServerResponse) => {
+  // EventEmitter invokes every request listener even when an earlier listener
+  // sends a response. Own the dispatch so dashboard traffic cannot also reach
+  // the proxy handler (or trigger an outgoing connection).
+  server.removeAllListeners('request');
+  server.on('request', async (req: IncomingMessage, res: ServerResponse) => {
     try {
       const urlObj = new URL(req.url || '/', 'http://localhost');
       const pathname = urlObj.pathname;
@@ -627,19 +631,19 @@ export function registerDashboard(
           targets: cfgRef.current.targets,
           retries: cfgRef.current.retries,
           timeout: cfgRef.current.timeout,
+          connections: getProxyConnectionStats(server) ?? { active: 0, limit: cfgRef.current.maxConnections, rejected: 0 },
           requestMetrics: getRequestMetrics?.() ?? { requests: 0, successes: 0, failures: 0, bytes: 0, latencyMs: 0 },
         });
         return;
       }
 
-      // Not a dashboard route — fall through to original listeners (HTTP proxy handler)
-      // When prependListener is used, original listeners fire automatically.
-      // If no original listeners exist, return 404 to avoid hanging.
+      // Not a dashboard route — delegate only these requests to the proxy.
       if (!origListeners.length) {
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Not found' }));
         return;
       }
+      for (const listener of origListeners) listener.call(server, req, res);
     } catch (e: unknown) {
       logger.error({ error: e instanceof Error ? e.message : String(e) }, 'dashboard: unhandled request error');
       try {
