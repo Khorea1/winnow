@@ -1390,6 +1390,35 @@ tbody tr:focus-within .proxy-cell .icon-btn,
   font-variant-numeric: tabular-nums;
 }
 
+.validation-history {
+  margin-top: 12px;
+}
+
+.validation-history h3 {
+  color: var(--ink-dim);
+  font-size: 0.72rem;
+  margin: 0 0 8px;
+}
+
+.validation-history-scroll {
+  max-height: 200px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.validation-history th,
+.validation-history td {
+  padding: 7px 9px;
+  white-space: nowrap;
+  font-size: 0.68rem;
+}
+
+.validation-history td {
+  border-bottom: 1px solid var(--line);
+  font-variant-numeric: tabular-nums;
+}
+
 /* ═══════════════════════════════════════════════════════════
    FOOTER
    ═══════════════════════════════════════════════════════════ */

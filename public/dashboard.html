@@ -196,6 +196,22 @@
             <button id="btn-validate" class="btn btn-primary btn-full" type="button" data-i18n="validateBtn">Validar agora</button>
             <button id="btn-stop-validate" class="btn btn-danger" type="button" data-i18n="stopBtn">Parar</button>
           </div>
+          <section class="validation-history" aria-labelledby="validation-history-title">
+            <h3 id="validation-history-title" data-i18n="validationHistoryTitle">Últimas validações</h3>
+            <div class="table-wrap validation-history-scroll">
+              <table>
+                <thead><tr>
+                  <th scope="col" data-i18n="historyStarted">Início</th>
+                  <th scope="col" data-i18n="historyMode">Modo</th>
+                  <th scope="col" data-i18n="historyThreads">Threads</th>
+                  <th scope="col" data-i18n="historyPassed">Válidos</th>
+                  <th scope="col" data-i18n="historyFailed">Inválidos</th>
+                  <th scope="col" data-i18n="historyExit">Saída</th>
+                </tr></thead>
+                <tbody id="validation-history-rows"><tr><td colspan="6" data-i18n="historyLoading">Carregando histórico…</td></tr></tbody>
+              </table>
+            </div>
+          </section>
           <div id="validate-log" role="log" aria-live="polite" data-i18n-aria="validateLogAria" aria-label="Resultados da validação" data-empty-msg="Sem atividade ainda. Clique em Validar para iniciar."></div>
         </div>
       </article>
