@@ -31,24 +31,22 @@ export function unsubscribeDashboard() {
   _unsubscribeSse = undefined;
 }
 
+export function readDashboardHtml(candidates: readonly string[], cache: boolean): string {
+  if (cache && _dashboardHtml) return _dashboardHtml;
+  let html = '<html><body><h1>Dashboard not found</h1></body></html>';
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      html = fs.readFileSync(candidate, 'utf8');
+      break;
+    }
+  }
+  if (cache) _dashboardHtml = html;
+  return html;
+}
+
 function serveDashboard(res: ServerResponse) {
   try {
-    const shouldCache = process.env.NODE_ENV === 'production';
-    let html = shouldCache ? _dashboardHtml : null;
-    if (!html) {
-      const candidates = [_DASHBOARD_PATH, path.join(process.cwd(), 'public/dashboard.html')];
-      for (const c of candidates) {
-        if (fs.existsSync(c)) {
-          html = fs.readFileSync(c, 'utf8');
-          break;
-        }
-      }
-      if (!html) {
-        // fallback minimal
-        html = '<html><body><h1>Dashboard not found</h1></body></html>';
-      }
-      if (shouldCache) _dashboardHtml = html;
-    }
+    const html = readDashboardHtml([_DASHBOARD_PATH, path.join(process.cwd(), 'public/dashboard.html')], process.env.NODE_ENV === 'production');
     res.writeHead(200, {
       'Content-Type': 'text/html; charset=utf-8',
       'X-Content-Type-Options': 'nosniff',
