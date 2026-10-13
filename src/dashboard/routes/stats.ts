@@ -1,6 +1,6 @@
 import type { ServerResponse } from 'node:http';
 import { type HealthEntry, HealthStore } from '../../health/index.js';
-import { redactProxy } from '../../proxy/redact.js';
+import { publicProxyKey } from '../../proxy/redact.js';
 import { getProxyConnectionStats } from '../../proxy/server.js';
 import { respondJson } from '../http.js';
 import { proxyId } from '../proxyKey.js';
@@ -19,7 +19,7 @@ export function handleStatsRoute(res: ServerResponse, pathname: string, ctx: Das
       const frozen = h.frozenUntil > now;
       const banned = now < h.bannedUntil;
       const score = frozen || banned ? Infinity : HealthStore.computeScore(h, now);
-      return { id: proxyId(raw), proxy: redactProxy(raw), ...h, score, banned, frozen };
+      return { id: proxyId(raw), proxy: publicProxyKey(raw), ...h, score, banned, frozen };
     })
     .sort((a, b) => a.score - b.score)
     .slice(0, 50);

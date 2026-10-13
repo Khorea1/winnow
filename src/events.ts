@@ -1,3 +1,5 @@
+import { publicProxyKey, redactProxyText } from './proxy/redact.js';
+
 export interface ProxyEvent {
   id: number;
   ts: number;
@@ -36,7 +38,14 @@ export class EventLog {
   }
 
   push(event: Omit<ProxyEvent, 'id' | 'ts'>): ProxyEvent {
-    const e: ProxyEvent = { ...event, id: this.nextId++, ts: Date.now() };
+    const e: ProxyEvent = {
+      ...event,
+      proxy: publicProxyKey(event.proxy),
+      ...(event.error ? { error: redactProxyText(event.error) } : {}),
+      ...(event.detail ? { detail: redactProxyText(event.detail) } : {}),
+      id: this.nextId++,
+      ts: Date.now(),
+    };
     this._buffer[this._head] = e;
     this._head = (this._head + 1) % this._max;
     if (this._size < this._max) {

@@ -210,7 +210,7 @@ describe('dashboard routes', () => {
     try {
       const stats = await fetch(`${base}/__stats`, { headers: auth });
       const body = (await stats.json()) as { top: { id: string; proxy: string }[] };
-      const shared = body.top.filter((row) => row.proxy === 'http://***:***@proxy.example:8080');
+      const shared = body.top.filter((row) => row.proxy === 'proxy.example:8080');
       assert.equal(shared.length, 2);
       assert.notEqual(shared[0].id, shared[1].id);
       assert.match(shared[0].id, /^p_[0-9a-f]{64}$/);

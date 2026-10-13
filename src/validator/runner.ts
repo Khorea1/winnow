@@ -1,5 +1,5 @@
 import { createLogger } from '../logger.js';
-import { redactProxy } from '../proxy/redact.js';
+import { publicProxyKey, redactProxyText } from '../proxy/redact.js';
 import { httpCheck } from './checks/http.js';
 import { streamingCheck } from './checks/streaming.js';
 import { parseProxyForTcp, tcpCheck } from './checks/tcp.js';
@@ -10,7 +10,7 @@ const logger = createLogger('validator-runner');
 
 /** Build a failure result consistently across all validation stages. */
 function fail(proxy: string, stage: string, error: string, extra?: Partial<ProxyResult>): ProxyResult {
-  return { proxy, valid: false, stage, ...extra, error: redactProxy(extra?.error ?? error) };
+  return { proxy, valid: false, stage, ...extra, error: redactProxyText(extra?.error ?? error) };
 }
 // Helper: race a promise against an abort signal
 function withAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -242,18 +242,18 @@ export async function runValidation(
 
         try {
           const res = await validateSingleProxy(proxy, opts, abortSignal);
-          results.push(res);
-          const displayProxy = redactProxy(res.proxy);
+          const displayResult = { ...res, proxy: publicProxyKey(res.proxy), ...(res.error ? { error: redactProxyText(res.error) } : {}) };
+          results.push(displayResult);
           if (res.valid) valid.push(res.proxy);
           else invalid.push({ proxy: res.proxy, reason: res.error || 'error' });
           done++;
           onProgress?.(res, { total, done, valid: valid.length, invalid: invalid.length });
           logger.debug(
             {
-              proxy: displayProxy,
+              proxy: displayResult.proxy,
               valid: res.valid,
               stage: res.stage,
-              error: res.error,
+              error: displayResult.error,
               done,
               total,
               validCount: valid.length,
@@ -262,21 +262,29 @@ export async function runValidation(
             'validation result',
           );
         } catch (e: unknown) {
-          const errMsg = redactProxy(e instanceof Error ? e.message : String(e));
-          const displayProxy = redactProxy(proxy);
+          const errMsg = e instanceof Error ? e.message : String(e);
           const r: ProxyResult = { proxy, valid: false, error: errMsg, stage: 'unknown' };
-          results.push(r);
-          invalid.push({ proxy, reason: r.error! });
+          results.push({ ...r, proxy: publicProxyKey(proxy), error: redactProxyText(errMsg) });
+          invalid.push({ proxy, reason: errMsg });
           done++;
           onProgress?.(r, { total, done, valid: valid.length, invalid: invalid.length });
           logger.debug(
-            { proxy: displayProxy, valid: false, stage: r.stage, error: r.error, done, total, validCount: valid.length, invalidCount: invalid.length },
+            {
+              proxy: publicProxyKey(proxy),
+              valid: false,
+              stage: r.stage,
+              error: redactProxyText(errMsg),
+              done,
+              total,
+              validCount: valid.length,
+              invalidCount: invalid.length,
+            },
             'validation error',
           );
         }
       }
     } catch (e) {
-      logger.error({ error: redactProxy(e instanceof Error ? e.message : String(e)) }, 'validation worker error');
+      logger.error({ error: redactProxyText(e instanceof Error ? e.message : String(e)) }, 'validation worker error');
     }
   }
 

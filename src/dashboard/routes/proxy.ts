@@ -5,7 +5,7 @@ import { atomicRewrite } from '../../atomicRewrite.js';
 import { resolveDataDir } from '../../config/index.js';
 import { EventLog } from '../../events.js';
 import { parseLine } from '../../proxy/dial.js';
-import { redactProxy } from '../../proxy/redact.js';
+import { publicProxyKey } from '../../proxy/redact.js';
 import { isSafeProxyFile } from '../auth.js';
 import { respondJson, sanitizeError } from '../http.js';
 import { proxyId, sanitizeProxyKey } from '../proxyKey.js';
@@ -46,7 +46,7 @@ export async function handleProxyRoute(req: IncomingMessage, res: ServerResponse
       ? [key]
       : (() => {
           const ids = [...candidates].filter((raw) => proxyId(raw) === key);
-          return ids.length ? ids : [...candidates].filter((raw) => sanitizeProxyKey(raw) === sanitizeProxyKey(key));
+          return ids.length ? ids : [...candidates].filter((raw) => sanitizeProxyKey(raw) === sanitizeProxyKey(key) || publicProxyKey(raw) === key);
         })();
     if (matches.length > 1) {
       respondJson(res, { error: 'Ambiguous proxy key; use the ID from /__stats' }, 409);
@@ -78,7 +78,7 @@ export async function handleProxyRoute(req: IncomingMessage, res: ServerResponse
       res.end(JSON.stringify({ error: 'Proxy not found' }));
       return true;
     }
-    const safeKey = redactProxy(selected);
+    const safeKey = publicProxyKey(selected);
     EventLog.safePush(eventLog, { type: 'pool', proxy: safeKey, target: '', status: 'info', detail: 'removed via dashboard' });
     broadcast(sseClients, 'proxy:removed', { key: safeKey, id: proxyId(selected) });
     respondJson(res, { removed: true, key: safeKey, id: proxyId(selected), removedFromFile, removedFromHealth });

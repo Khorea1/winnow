@@ -5,6 +5,7 @@ import { atomicRewrite } from '../atomicRewrite.js';
 import { loadConfig } from '../config/index.js';
 import { createLogger } from '../logger.js';
 import { replaceValidatedProxies } from '../proxy/proxyFile.js';
+import { publicProxyKey, redactProxyText } from '../proxy/redact.js';
 import { runValidation } from './runner.js';
 import type { ProgressCallback, Timeouts, ValidatorOptions, ValidatorOptionsOverrides } from './types.js';
 
@@ -255,8 +256,8 @@ Examples:
   const opts: ValidatorOptions = buildOptionsFromConfig(loadConfig(), overrides);
 
   const onProgress: ProgressCallback = (res, _stats) => {
-    if (res.valid) console.log(`[VALID] ${res.proxy}`);
-    else console.log(`[INVALID] ${res.proxy} (${res.error})`);
+    if (res.valid) console.log(`[VALID] ${publicProxyKey(res.proxy)}`);
+    else console.log(`[INVALID] ${publicProxyKey(res.proxy)} (${redactProxyText(res.error || 'error')})`);
   };
 
   const result = await validateFile(proxyFile, opts, onProgress);
