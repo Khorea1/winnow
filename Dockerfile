@@ -17,6 +17,8 @@ RUN npm ci
 # Build the app
 COPY tsconfig.json ./
 COPY src/ src/
+COPY scripts/ scripts/
+COPY public/html/ public/html/
 RUN npm run build
 
 # ── Stage 2: Runtime ────────────────────────────────────────
@@ -37,6 +39,7 @@ COPY --from=builder /app/package.json ./
 
 # Copy static dashboard assets
 COPY public/ public/
+COPY --from=builder /app/public/dashboard.html public/dashboard.html
 
 # Create writable data dir
 RUN mkdir -p /srv/data && chown -R rotator:rotator /srv
@@ -48,6 +51,6 @@ EXPOSE 8080
 VOLUME ["/srv/data"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:8080/__stats',r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>process.exit(d.includes('total')?0:1))}).on('error',()=>process.exit(1))"
+  CMD node -e "require('http').get('http://localhost:'+(process.env.WINNOW_PORT||8080)+'/__stats',r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>process.exit(d.includes('total')?0:1))}).on('error',()=>process.exit(1))"
 
 CMD ["node", "dist/index.js"]

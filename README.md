@@ -210,7 +210,9 @@ Point your browser to `http://localhost:8080/dashboard`. Use Winnow as your HTTP
 docker compose up --build -d
 ```
 
-`docker-compose.yml` mounts a persistent volume at `/srv/data` (where `config.json` and `proxies.txt` live), exposes `8080`, and runs a `__stats` healthcheck. Bind-mount your own `proxies.txt` if you prefer external editing.
+`docker-compose.yml` builds the `winnow:local` image, mounts the persistent `winnow-data` volume at `/srv/data` (where `config.json` and `proxies.txt` live), and runs a `__stats` healthcheck. Bind-mount your own `proxies.txt` if you prefer external editing. Set `WINNOW_PORT=9090 docker compose up --build -d` to change both the container listener and published host port; the healthcheck follows that port.
+
+If upgrading from the previous `rotator` service, set `WINNOW_DATA_VOLUME` to the **existing** Docker volume name before starting the new service (usually `<project>_rotator-data`, check with `docker volume ls`). For example, `WINNOW_DATA_VOLUME=winnow_rotator-data docker compose up --build -d` reuses that volume and keeps its SQLite history, config, and proxy list. Renaming the Compose service also changes the container name. Avoid removing the old volume before confirming your data is present.
 
 ---
 
