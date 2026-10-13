@@ -62,6 +62,16 @@ describe('EventLog', () => {
     assert.equal(log.all.length, 0);
   });
 
+  it('clear preserves SSE subscribers for subsequent events', async () => {
+    const log = new EventLog(10);
+    const received: number[] = [];
+    log.subscribe((event) => received.push(event.id));
+    log.clear();
+    log.push({ type: 'connect', proxy: 'p', target: 't', status: 'success' });
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    assert.deepEqual(received, [1]);
+  });
+
   it('subscribe receives events', async () => {
     const log = new EventLog(100);
     let received: ProxyEvent | undefined;

@@ -90,6 +90,5 @@ export class EventLog {
     this._head = 0;
     this._tail = 0;
     this._size = 0;
-    this.listeners.clear(); // Also clear listeners
   }
 }

@@ -54,6 +54,7 @@ export interface RotatorConfig {
   sessionAffinityMs: number;
   // Pre-connect jitter — random delay before upstream dial (0 = disabled)
   preConnectJitterMs: number;
+  maxConnections: number;
 }
 
 const DEFAULTS: RotatorConfig = {
@@ -90,6 +91,7 @@ const DEFAULTS: RotatorConfig = {
   healthCheckParallel: true,
   sessionAffinityMs: 300000, // 5 min — stick to same proxy per target
   preConnectJitterMs: 0, // disabled by default (opt-in, adds latency)
+  maxConnections: 1000,
 };
 
 const API_ALLOWED_KEYS = new Set<keyof RotatorConfig>([
@@ -125,6 +127,7 @@ const API_ALLOWED_KEYS = new Set<keyof RotatorConfig>([
   'healthCheckParallel',
   'sessionAffinityMs',
   'preConnectJitterMs',
+  'maxConnections',
 ]);
 
 function clampInt(value: unknown, min: number, max: number, def: number): number {
@@ -240,6 +243,7 @@ function sanitize(cfg: Record<string, unknown>): RotatorConfig {
   c.healthCheckParallel = c.healthCheckParallel !== false;
   c.sessionAffinityMs = clampInt(c.sessionAffinityMs, 0, 86400000, DEFAULTS.sessionAffinityMs); // 0–24h
   c.preConnectJitterMs = clampInt(c.preConnectJitterMs, 0, 10000, DEFAULTS.preConnectJitterMs); // 0–10s
+  c.maxConnections = clampInt(c.maxConnections, 1, 100000, DEFAULTS.maxConnections);
   c.proxyFile = ensureString(c.proxyFile, DEFAULTS.proxyFile, (s) => !s.includes('\0'));
   if (!path.isAbsolute(c.proxyFile)) c.proxyFile = path.resolve(resolveDataDir(), c.proxyFile);
   return c;

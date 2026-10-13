@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
 import { DEFAULTS } from '../config/index.js';
 import { blankEntry, HealthStore } from '../health/index.js';
 import type { ParsedProxy } from '../proxy/dial.js';
-import { createProxyServer } from '../proxy/server.js';
+import { applyServerTimeouts, createProxyServer } from '../proxy/server.js';
 
 /**
  * Hostname used as the target in tests. Not blocked by SSRF (not a private IP
@@ -174,6 +174,7 @@ describe('proxy server', () => {
     let proxyPort: number;
     let health: HealthStore;
     let db: Database.Database;
+    const metrics: { success: boolean; latency: number; bytes: number }[] = [];
 
     before(async () => {
       // Target echo server
@@ -185,7 +186,7 @@ describe('proxy server', () => {
         req.on('end', () => {
           const data = JSON.stringify({ ok: true, method: req.method, path: req.url, body });
           const buf = Buffer.from(data, 'utf-8');
-          res.writeHead(200, {
+          res.writeHead(req.url === '/server-error' ? 503 : 200, {
             'Content-Type': 'application/json',
             'Content-Length': buf.length.toString(),
           });
@@ -210,6 +211,7 @@ describe('proxy server', () => {
         config: { current: { ...BASE_CONFIG } },
         health,
         getProxies: () => [proxyFromUrl(proxyUrl)],
+        onRequestMetrics: ({ success, latency, bytes }) => metrics.push({ success, latency, bytes }),
       });
       proxyPort = await listen(proxy);
     });
@@ -226,6 +228,17 @@ describe('proxy server', () => {
       assert.equal(parsed.ok, true);
       assert.equal(parsed.method, 'GET');
       assert.equal(parsed.path, '/test');
+      assert.equal(metrics.length, 1);
+      assert.equal(metrics[0].success, true);
+      assert.ok(metrics[0].bytes > 0);
+      assert.ok(metrics[0].latency >= 0);
+    });
+
+    it('records an upstream 5xx response as failed metrics', { timeout: 5000 }, async () => {
+      const response = await httpGetThroughProxy(proxyPort, TARGET_HOST, targetPort, '/server-error');
+      assert.equal(JSON.parse(response).path, '/server-error');
+      assert.equal(metrics.length, 2);
+      assert.equal(metrics[1].success, false);
     });
   });
 
@@ -310,6 +323,48 @@ describe('proxy server', () => {
       assert.ok(echo.equals(testPayload));
       sock.destroy();
     });
+
+    it('enforces the live connection limit until a CONNECT tunnel closes', { timeout: 7000 }, async () => {
+      const proxyUrl = `http://127.0.0.1:${upstreamPort}`;
+      const configRef = { current: { ...BASE_CONFIG, maxConnections: 1 } };
+      const limitedProxy = createProxyServer({
+        config: configRef,
+        health,
+        getProxies: () => [proxyFromUrl(proxyUrl)],
+      });
+      const port = await listen(limitedProxy);
+      const tunnel = net.connect(port, '127.0.0.1');
+      try {
+        const responsePromise = new Promise<string>((resolve, reject) => {
+          tunnel.once('data', (data: Buffer) => resolve(data.toString()));
+          tunnel.once('error', reject);
+        });
+        tunnel.write(`CONNECT ${TARGET_HOST}:${targetPort} HTTP/1.1\r\n\r\n`);
+        assert.match(await responsePromise, /HTTP\/1\.1 200/);
+
+        assert.match((await connectCheck(port, TARGET_HOST, targetPort)).status, /503/);
+        configRef.current.maxConnections = 2;
+        assert.match((await connectCheck(port, TARGET_HOST, targetPort)).status, /200/);
+      } finally {
+        tunnel.destroy();
+        limitedProxy.close();
+        limitedProxy.closeAllConnections();
+      }
+    });
+  });
+
+  it('applies updated server timeouts', () => {
+    const server = http.createServer();
+    try {
+      applyServerTimeouts(server, { ...BASE_CONFIG, timeout: 4500 });
+      assert.equal(server.timeout, 5000);
+      assert.equal(server.keepAliveTimeout, 5000);
+      applyServerTimeouts(server, { ...BASE_CONFIG, timeout: 45000 });
+      assert.equal(server.timeout, 45000);
+      assert.equal(server.keepAliveTimeout, 30000);
+    } finally {
+      server.close();
+    }
   });
 
   // ── SSRF blocking ─────────────────────────────────────────

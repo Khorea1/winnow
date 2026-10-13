@@ -225,9 +225,10 @@ export function registerDashboard(
     db: Database.Database;
     eventLog?: EventLog;
     onConfigChange?: (updated: RotatorConfig) => void;
+    getRequestMetrics?: () => { completed: number; succeeded: number; failed: number; bytes: number; totalLatencyMs: number };
   },
 ) {
-  const { config: cfgRef, health, db, eventLog, onConfigChange } = ctx;
+  const { config: cfgRef, health, db, eventLog, onConfigChange, getRequestMetrics } = ctx;
   const sseClients = new Set<ServerResponse>();
   let _validationRunning = false;
   let _abortController: AbortController | null = null;
@@ -265,8 +266,12 @@ export function registerDashboard(
   poolInterval.unref();
 
   const origListeners = server.listeners('request');
+  // EventEmitter calls every listener even when one has already handled the
+  // response. Dispatch through a single listener to keep dashboard API calls
+  // out of the forward proxy (including asynchronous POST handlers).
+  for (const listener of origListeners) server.removeListener('request', listener as (req: IncomingMessage, res: ServerResponse) => void);
 
-  server.prependListener('request', async (req: IncomingMessage, res: ServerResponse) => {
+  server.on('request', async (req: IncomingMessage, res: ServerResponse) => {
     try {
       const urlObj = new URL(req.url || '/', 'http://localhost');
       const pathname = urlObj.pathname;
@@ -303,11 +308,6 @@ export function registerDashboard(
           Object.assign(cfgRef.current, updated);
           // Notify config change listeners (health check timer reschedule, etc.)
           onConfigChange?.(updated);
-          // Refresh server-level timeouts from current config
-          if (typeof updated.timeout === 'number') {
-            server.timeout = Math.max(updated.timeout, 5000);
-            server.keepAliveTimeout = Math.min(server.timeout, 30000);
-          }
           respondJson(res, updated);
         } catch (e: unknown) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -559,18 +559,18 @@ export function registerDashboard(
           targets: cfgRef.current.targets,
           retries: cfgRef.current.retries,
           timeout: cfgRef.current.timeout,
+          requestMetrics: getRequestMetrics?.(),
         });
         return;
       }
 
-      // Not a dashboard route — fall through to original listeners (HTTP proxy handler)
-      // When prependListener is used, original listeners fire automatically.
-      // If no original listeners exist, return 404 to avoid hanging.
+      // Unhandled routes belong to the forward proxy.
       if (!origListeners.length) {
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Not found' }));
         return;
       }
+      for (const listener of origListeners) listener.call(server, req, res);
     } catch (e: unknown) {
       logger.error({ error: e instanceof Error ? e.message : String(e) }, 'dashboard: unhandled request error');
       try {

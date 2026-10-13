@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { parseHostPort, parseLine } from '../proxy/dial.js';
+import { parseHostPort, parseLine, parseUniqueProxies } from '../proxy/dial.js';
 import { isBlockedTarget } from '../proxy/ssrf.js';
 
 describe('parseHostPort', () => {
@@ -93,6 +93,14 @@ describe('parseLine', () => {
     assert.ok(r);
     assert.equal(r!.raw, 'socks5://host:1080');
   });
+});
+
+it('removes duplicate proxy endpoints while preserving the first raw key', () => {
+  const proxies = parseUniqueProxies('proxy.example:8080\n# comment\nhttp://proxy.example:8080\nproxy.example:8080\nsocks5://proxy.example:8080');
+  assert.deepEqual(
+    proxies.map(({ raw }) => raw),
+    ['proxy.example:8080', 'socks5://proxy.example:8080'],
+  );
 });
 
 describe('isBlockedTarget', () => {

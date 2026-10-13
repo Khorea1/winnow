@@ -16,6 +16,7 @@ describe('DEFAULTS', () => {
 
   it('has expected timeout', () => {
     assert.equal(DEFAULTS.timeout, 3500);
+    assert.equal(DEFAULTS.maxConnections, 1000);
   });
 
   it('healthCheckInterval defaults to 15000', () => {
@@ -66,6 +67,7 @@ describe('DEFAULTS', () => {
       'healthCheckParallel',
       'sessionAffinityMs',
       'preConnectJitterMs',
+      'maxConnections',
     ];
     for (const f of requiredFields) {
       assert.ok(f in DEFAULTS, `DEFAULTS missing ${f}`);
@@ -122,6 +124,7 @@ describe('loadConfig', () => {
           banBaseMs: -5000,
           banMaxMs: 999999999,
           validationMode: 'invalid-mode',
+          maxConnections: 0,
         }),
       );
 
@@ -131,6 +134,7 @@ describe('loadConfig', () => {
       assert.equal(cfg.banBaseMs, DEFAULTS.banBaseMs);
       assert.equal(cfg.banMaxMs, DEFAULTS.banMaxMs); // clamped by banBaseMs lower bound + default
       assert.equal(cfg.validationMode, DEFAULTS.validationMode); // invalid -> default
+      assert.equal(cfg.maxConnections, DEFAULTS.maxConnections);
     } finally {
       if (orig) process.env.WINNOW_CONFIG = orig;
       else delete process.env.WINNOW_CONFIG;

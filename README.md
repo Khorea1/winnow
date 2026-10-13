@@ -228,6 +228,7 @@ Loaded from `config.json` (path overridden by `WINNOW_CONFIG` env or `--config` 
 | `retries` | `5` | Proxies tried per request (top-N by score) |
 | `maxErrors` | `3` | Transient errors before a proxy is excluded from rotation |
 | `timeout` | `3500` | Upstream connection timeout (ms) |
+| `maxConnections` | `1000` | Maximum active HTTP requests and CONNECT tunnels; updates apply without a restart (1–100000) |
 | `healthCheckInterval` | `15000` | Interval between health check ticks (ms). Set to `false` to disable periodic checks entirely. |
 | `healthCheckCount` | `10` | Proxies to test per tick. Lower = less burst, higher = faster pool coverage. |
 | `healthCheckParallel` | `true` | `true` = fire all checks concurrently (current behavior), `false` = serialize them 1-by-1 to avoid burst TCP connections. |
@@ -312,7 +313,7 @@ Any flag left unset falls back to the matching `validation*` field in `config.js
 | Path | Method | Description |
 |---|---|---|
 | `/dashboard` | GET | Web UI dashboard |
-| `/__stats` | GET | JSON stats: total, alive, top-50 proxies by score, current config snapshot |
+| `/__stats` | GET | JSON stats: total, alive, top-50 proxies by score, current config snapshot, and completed upstream request metrics (count, successes, failures, bytes, total latency) |
 | `/api/config` | GET | Read current config |
 | `/api/config` | POST | Hot-reload config (sanitized, allow-listed keys only) |
 | `/api/proxy?key=<key>` | DELETE | Remove a proxy (rewrites the proxy file atomically + clears health row + SSE `proxy:removed`) |
