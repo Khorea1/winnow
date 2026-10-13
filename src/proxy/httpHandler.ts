@@ -41,6 +41,11 @@ export function handleHttp(ctx: HttpHandlerCtx, req: IncomingMessage, res: Serve
     return;
   }
   conn.count++;
+  // A response may outlive this synchronous handler by minutes. Keep the slot
+  // reserved until completion or client disconnect, including on error paths.
+  res.once('close', () => {
+    conn.count--;
+  });
   try {
     let targetUrl: URL;
     try {
@@ -72,6 +77,10 @@ export function handleHttp(ctx: HttpHandlerCtx, req: IncomingMessage, res: Serve
     const dialMode = targetUrl.protocol === 'http:' ? 'forward' : 'tunnel';
     tryWithRetry(proxies, ctx.health, config, tHost, tPort, el, reqId, dialMode)
       .then(({ sock: upSock, head: upHead, upstream, latency: dialLatency, forwarded, targetAddress }) => {
+        if (res.destroyed || res.writableEnded) {
+          upSock.destroy();
+          return;
+        }
         logger.info({ reqId, proxy: upstream.raw, target: targetKey, latency: dialLatency }, 'http upstream acquired');
         EventLog.safePush(el, { type: 'http', proxy: upstream.raw, target: targetKey, status: 'success', latency: dialLatency });
         let requestFailed = false;
@@ -99,6 +108,8 @@ export function handleHttp(ctx: HttpHandlerCtx, req: IncomingMessage, res: Serve
         if (upHead?.length) {
           markHttpFailure(new Error('upstream sent data before response'));
           upSock.destroy();
+          res.writeHead(502, { 'Content-Type': 'text/plain' });
+          res.end('Bad Gateway');
           return;
         }
 
@@ -385,7 +396,5 @@ export function handleHttp(ctx: HttpHandlerCtx, req: IncomingMessage, res: Serve
       res.writeHead(502, { 'Content-Type': 'text/plain' });
       res.end('Bad Gateway');
     } catch {}
-  } finally {
-    conn.count--;
   }
 }

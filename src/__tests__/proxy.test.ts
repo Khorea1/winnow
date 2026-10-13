@@ -815,4 +815,90 @@ describe('proxy server', () => {
       badProxy.close();
     });
   });
+
+  describe('maxConnections across HTTP and CONNECT', () => {
+    it('holds capacity until a request/tunnel closes and then accepts new work', { timeout: 10_000 }, async () => {
+      const requestArrived = Promise.withResolvers<void>();
+      let heldResponse: http.ServerResponse | undefined;
+      const target = http.createServer((req, res) => {
+        if (req.url === '/hold') {
+          heldResponse = res;
+          requestArrived.resolve();
+        } else {
+          res.end('ok');
+        }
+      });
+      const targetPort = await listen(target);
+      const up = await startUpstreamProxy();
+      const upstream = up.server;
+      const db = createDb();
+      const health = new HealthStore(db, { pruneAfterMs: 0, fatalBanMs: 300_000 });
+      const proxyUrl = `http://127.0.0.1:${up.port}`;
+      health.set(proxyUrl, blankEntry());
+      const proxy = createProxyServer({
+        config: { current: { ...BASE_CONFIG, maxConnections: 1 } },
+        health,
+        getProxies: () => [proxyFromUrl(proxyUrl)],
+      });
+      const proxyPort = await listen(proxy);
+      let tunnel: net.Socket | undefined;
+      try {
+        const pending = httpResponseThroughProxy(proxyPort, TARGET_HOST, targetPort, 'GET', '/hold');
+        await requestArrived.promise;
+        const rejectedTunnel = await connectCheck(proxyPort, TARGET_HOST, targetPort);
+        assert.match(rejectedTunnel.status, /503/);
+        const rejectedHttp = await httpResponseThroughProxy(proxyPort, TARGET_HOST, targetPort, 'GET', '/quick');
+        assert.equal(rejectedHttp.statusCode, 503);
+
+        heldResponse!.end('held');
+        assert.deepEqual(await pending, { statusCode: 200, body: 'held' });
+
+        const opened = Promise.withResolvers<string>();
+        tunnel = net.connect(proxyPort, '127.0.0.1', () => {
+          tunnel!.write(`CONNECT ${TARGET_HOST}:${targetPort} HTTP/1.1\r\n\r\n`);
+        });
+        let status = '';
+        tunnel.on('data', (chunk: Buffer) => {
+          status += chunk.toString();
+          if (status.includes('\r\n\r\n')) opened.resolve(status);
+        });
+        tunnel.on('error', opened.reject);
+        assert.match(await opened.promise, /HTTP\/1\.1 200/);
+        const rejectedWhileTunneling = await httpResponseThroughProxy(proxyPort, TARGET_HOST, targetPort, 'GET', '/quick');
+        assert.equal(rejectedWhileTunneling.statusCode, 503);
+
+        // Exchange useful bytes before closing so the health classifier does
+        // not (correctly) record this deliberately short tunnel as an early failure.
+        const tunnelData = Promise.withResolvers<string>();
+        tunnel.on('data', (chunk: Buffer) => {
+          if (chunk.toString().includes('HTTP/1.1 200')) tunnelData.resolve(chunk.toString());
+        });
+        tunnel.write(`GET /quick HTTP/1.1\r\nHost: ${TARGET_HOST}\r\nConnection: close\r\n\r\n`);
+        assert.match(await tunnelData.promise, /HTTP\/1\.1 200/);
+
+        const closed = Promise.withResolvers<void>();
+        tunnel.once('close', () => closed.resolve());
+        tunnel.destroy();
+        await closed.promise;
+        // Client-side close can precede the peer's close event by one event-loop turn.
+        let response: { statusCode: number | undefined; body: string } | undefined;
+        for (let i = 0; i < 10; i++) {
+          response = await httpResponseThroughProxy(proxyPort, TARGET_HOST, targetPort, 'GET', '/quick');
+          if (response.statusCode === 200) break;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        assert.deepEqual(response, { statusCode: 200, body: 'ok' });
+      } finally {
+        tunnel?.destroy();
+        heldResponse?.end();
+        health.stop();
+        await Promise.all([
+          new Promise<void>((resolve) => proxy.close(() => resolve())),
+          new Promise<void>((resolve) => upstream.close(() => resolve())),
+          new Promise<void>((resolve) => target.close(() => resolve())),
+        ]);
+        db.close();
+      }
+    });
+  });
 });

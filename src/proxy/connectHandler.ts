@@ -59,6 +59,10 @@ export function handleConnect(ctx: ConnectHandlerCtx, req: IncomingMessage, clie
     return;
   }
   conn.count++;
+  // CONNECT stays active until the client TCP socket actually closes.
+  clientSock.once('close', () => {
+    conn.count--;
+  });
   const targetKey = `${tHost}:${tPort}`;
   const config = ctx.config.current;
   const proxies = ctx.getProxies();
@@ -68,6 +72,10 @@ export function handleConnect(ctx: ConnectHandlerCtx, req: IncomingMessage, clie
   try {
     tryWithRetry(proxies, ctx.health, config, tHost, tPort, el, reqId)
       .then(({ sock: upSock, head: upHead, upstream, latency: dialLatency }) => {
+        if (clientSock.destroyed) {
+          upSock.destroy();
+          return;
+        }
         logger.info({ reqId, proxy: upstream.raw, target: targetKey, latency: dialLatency }, 'connect upstream acquired');
         EventLog.safePush(el, { type: 'connect', proxy: upstream.raw, target: targetKey, status: 'success', latency: dialLatency });
 
@@ -231,7 +239,5 @@ export function handleConnect(ctx: ConnectHandlerCtx, req: IncomingMessage, clie
       clientSock.write('HTTP/1.1 502 Bad Gateway\r\n\r\n');
     } catch {}
     clientSock.end();
-  } finally {
-    conn.count--;
   }
 }
