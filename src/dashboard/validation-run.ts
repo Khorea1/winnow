@@ -59,7 +59,7 @@ export function createValidationManager(ctx: DashboardRegistrationContext, sseCl
 
     _validationRunning = true;
     _abortController = new AbortController();
-    const runId = createValidationRun(ctx.db);
+    const runId = createValidationRun(ctx.db, opts.mode, opts.threads);
 
     respondJson(res, { jobId: runId, mode: opts.mode, threads: opts.threads, started: Date.now() });
 

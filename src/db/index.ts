@@ -23,7 +23,9 @@ CREATE TABLE IF NOT EXISTS validation_runs (
   total     INTEGER NOT NULL DEFAULT 0,
   passed    INTEGER NOT NULL DEFAULT 0,
   failed    INTEGER NOT NULL DEFAULT 0,
-  exit_code INTEGER
+  exit_code INTEGER,
+  mode      TEXT,
+  threads   INTEGER
 );
 `;
 
@@ -71,6 +73,13 @@ export function initDb(dbPath: string): DatabaseType {
     }
     db.pragma('user_version = 2');
   }
+  // Preserve existing run history when upgrading from databases created before mode/threads were recorded.
+  if ((db.pragma('user_version', { simple: true }) as number) < 3) {
+    const columns = new Set((db.pragma('table_info(validation_runs)') as { name: string }[]).map((col) => col.name));
+    if (!columns.has('mode')) db.exec('ALTER TABLE validation_runs ADD COLUMN mode TEXT');
+    if (!columns.has('threads')) db.exec('ALTER TABLE validation_runs ADD COLUMN threads INTEGER');
+    db.pragma('user_version = 3');
+  }
 
   return db;
 }
@@ -100,7 +109,7 @@ interface StmtCache {
   upsertHealth: Statement<unknown[]>;
   deleteHealth: Statement<[string]>;
   loadAll: Statement<unknown[], HealthRow>;
-  insertRun: Statement<[number]>;
+  insertRun?: Statement<[number, string, number]>;
   finishRun: Statement<[number, number, number, number, number, number]>;
   recentRuns: Statement<[number], unknown>;
   upsertTx: (rows: HealthRowInput[]) => void;
@@ -124,7 +133,6 @@ function getStmts(db: DatabaseType): StmtCache {
       `),
       deleteHealth: db.prepare('DELETE FROM proxy_health WHERE proxy = ?'),
       loadAll: db.prepare('SELECT * FROM proxy_health'),
-      insertRun: db.prepare('INSERT INTO validation_runs (started) VALUES (?)'),
       finishRun: db.prepare('UPDATE validation_runs SET finished = ?, total = ?, passed = ?, failed = ?, exit_code = ? WHERE id = ?'),
       recentRuns: db.prepare('SELECT * FROM validation_runs ORDER BY id DESC LIMIT ?'),
       upsertTx: db.transaction((rows: HealthRowInput[]) => {
@@ -163,8 +171,10 @@ export function removeProxyHealth(db: DatabaseType, proxy: string) {
   }
 }
 
-export function createValidationRun(db: DatabaseType) {
-  return getStmts(db).insertRun.run(Math.floor(Date.now() / 1000)).lastInsertRowid as number;
+export function createValidationRun(db: DatabaseType, mode: string, threads: number) {
+  const statements = getStmts(db);
+  statements.insertRun ??= db.prepare('INSERT INTO validation_runs (started, mode, threads) VALUES (?, ?, ?)');
+  return statements.insertRun.run(Math.floor(Date.now() / 1000), mode, threads).lastInsertRowid as number;
 }
 
 export function finishValidationRun(db: DatabaseType, id: number, total: number, passed: number, failed: number, exitCode: number) {

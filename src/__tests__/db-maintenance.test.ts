@@ -31,7 +31,7 @@ describe('SQLite maintenance', () => {
     };
     try {
       const db = openDb();
-      assert.equal(db.pragma('user_version', { simple: true }), 2);
+      assert.equal(db.pragma('user_version', { simple: true }), 3);
     } finally {
       prototype.pragma = original;
     }

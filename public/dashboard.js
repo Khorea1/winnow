@@ -123,6 +123,17 @@ import { classifyProxy as classify, sortAndFilterProxies } from './dashboard-uti
       validateBtnRunning: 'Validando…',
       stopBtn: 'Parar',
       stopBtnStopping: 'Parando…',
+      validationHistoryTitle: 'Últimas validações',
+      historyStarted: 'Início',
+      historyMode: 'Modo',
+      historyThreads: 'Threads',
+      historyPassed: 'Válidos',
+      historyFailed: 'Inválidos',
+      historyExit: 'Saída',
+      historyLoading: 'Carregando histórico…',
+      historyEmpty: 'Nenhuma validação registrada.',
+      historyError: 'Não foi possível carregar o histórico.',
+      historyPending: 'Incompleta',
       validateLogAria: 'Resultados da validação',
       validateLogEmpty: 'Sem atividade ainda. Clique em Validar para iniciar.',
       footerSse: 'SSE em tempo real',
@@ -289,6 +300,17 @@ import { classifyProxy as classify, sortAndFilterProxies } from './dashboard-uti
       validateBtnRunning: 'Validating…',
       stopBtn: 'Stop',
       stopBtnStopping: 'Stopping…',
+      validationHistoryTitle: 'Recent validations',
+      historyStarted: 'Started',
+      historyMode: 'Mode',
+      historyThreads: 'Threads',
+      historyPassed: 'Passed',
+      historyFailed: 'Failed',
+      historyExit: 'Exit',
+      historyLoading: 'Loading history…',
+      historyEmpty: 'No validation runs yet.',
+      historyError: 'Could not load validation history.',
+      historyPending: 'Unfinished',
       validateLogAria: 'Validation results',
       validateLogEmpty: 'No activity yet. Click Validate to start.',
       footerSse: 'Live SSE',
@@ -467,6 +489,7 @@ import { classifyProxy as classify, sortAndFilterProxies } from './dashboard-uti
     updateModeDesc();
     renderProxyTable();
     renderSpectrum();
+    renderValidationHistory();
   }
 
   document.querySelectorAll('.lang-btn').forEach((btn) => {
@@ -1001,6 +1024,7 @@ import { classifyProxy as classify, sortAndFilterProxies } from './dashboard-uti
       if (dot) dot.className = 'dot live';
       if (txt) txt.textContent = t('liveActive');
       syncValidationStatus();
+      void loadValidationHistory();
       _sseRetryCount = 0; // Reset retry count on successful connection
     });
 
@@ -1124,6 +1148,7 @@ import { classifyProxy as classify, sortAndFilterProxies } from './dashboard-uti
         }
         toast(d.stopped ? t('validationStoppedToast') : t('validationDoneToast', { ok: d.passed, fail: d.failed }));
         refreshStats();
+        void loadValidationHistory();
       } catch {
         /* ignore parse errors */
       }
@@ -1284,6 +1309,49 @@ import { classifyProxy as classify, sortAndFilterProxies } from './dashboard-uti
     const sel = document.getElementById('evt-filter');
     if (sel) sel.value = '';
   });
+
+  let validationHistory = [];
+
+  function renderValidationHistory(message) {
+    const body = document.getElementById('validation-history-rows');
+    if (!body) return;
+    body.replaceChildren();
+    if (message || !validationHistory.length) {
+      const cell = document.createElement('td');
+      cell.colSpan = 6;
+      cell.textContent = t(message || 'historyEmpty');
+      const row = document.createElement('tr');
+      row.appendChild(cell);
+      body.appendChild(row);
+      return;
+    }
+    for (const run of validationHistory) {
+      const row = document.createElement('tr');
+      const values = [
+        new Date(run.started * 1000).toLocaleString(lang === 'pt' ? 'pt-BR' : 'en-US'),
+        run.mode ?? '—',
+        run.threads ?? '—',
+        run.passed,
+        run.failed,
+        run.finished === null ? t('historyPending') : (run.exit_code ?? '—'),
+      ];
+      for (const value of values) {
+        const cell = document.createElement('td');
+        cell.textContent = String(value);
+        row.appendChild(cell);
+      }
+      body.appendChild(row);
+    }
+  }
+
+  async function loadValidationHistory() {
+    try {
+      validationHistory = await fetchJSON('/api/validate');
+      renderValidationHistory();
+    } catch {
+      renderValidationHistory('historyError');
+    }
+  }
 
   /* ==================== validation UI ==================== */
 
@@ -1505,6 +1573,7 @@ import { classifyProxy as classify, sortAndFilterProxies } from './dashboard-uti
     } catch {
       /* stats fail gracefully */
     }
+    await loadValidationHistory();
     setInterval(refreshStats, 5000);
     connectSSE();
     try {
