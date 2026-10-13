@@ -17,6 +17,8 @@ RUN npm ci
 # Build the app
 COPY tsconfig.json ./
 COPY src/ src/
+COPY public/ public/
+COPY scripts/ scripts/
 RUN npm run build
 
 # ── Stage 2: Runtime ────────────────────────────────────────
@@ -48,6 +50,6 @@ EXPOSE 8080
 VOLUME ["/srv/data"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:8080/__stats',r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>process.exit(d.includes('total')?0:1))}).on('error',()=>process.exit(1))"
+  CMD node -e "const t=process.env.WINNOW_TOKEN||process.env.DASHBOARD_TOKEN||process.env.API_TOKEN;require('http').get('http://localhost:8080/__stats',t?{headers:{Authorization:'Bearer '+t}}:{},r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>process.exit(r.statusCode===200&&d.includes('total')?0:1))}).on('error',()=>process.exit(1))"
 
 CMD ["node", "dist/index.js"]

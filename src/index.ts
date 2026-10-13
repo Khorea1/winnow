@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig, resolveDataDir } from './config/index.js';
 import { registerDashboard } from './dashboard/index.js';
-import { initDb } from './db/index.js';
+import { initDb, startIncrementalVacuum } from './db/index.js';
 import { EventLog } from './events.js';
 import { blankEntry, HealthStore } from './health/index.js';
 import { createLogger } from './logger.js';
@@ -41,6 +41,12 @@ function parseArgv(args: string[]): Record<string, string | number | boolean> {
   return r;
 }
 const argv = parseArgv(process.argv.slice(2));
+if (argv.help === true) {
+  console.log(
+    `Usage: winnow [options]\n\nOptions:\n  -h, --help                 Show this help and exit\n  -p, --port <port>          Listen port (1–65535)\n  -f, --proxy-file <path>    Proxy list file\n  -c, --config <path>        Config file path\n  -t, --timeout <ms>         Upstream timeout (500–60000)\n  -v, --validation-mode <m>  quick, standard, strict, stream, tcp-only\n  -d, --data-dir <path>      Data directory`,
+  );
+  process.exit(0);
+}
 
 // Parse CLI args — undefined when flag not passed, so config.json defaults survive
 const cliPort = typeof argv.port === 'string' ? Number(argv.port) : undefined;
@@ -109,10 +115,20 @@ const dbPath = path.join(parsed.dir, `${parsed.name}.db`);
 
 // Initialize database
 const db = initDb(dbPath);
+const stopIncrementalVacuum = startIncrementalVacuum(db);
 
 // Event log
 const eventLog = new EventLog();
 const health = new HealthStore(db, config, eventLog);
+const requestMetrics = { requests: 0, successes: 0, failures: 0, bytes: 0, latencyMs: 0 };
+const MAX_METRIC = Number.MAX_SAFE_INTEGER;
+function recordRequestMetrics(info: { success: boolean; latency: number; bytes: number }) {
+  requestMetrics.requests = Math.min(MAX_METRIC, requestMetrics.requests + 1);
+  if (info.success) requestMetrics.successes = Math.min(MAX_METRIC, requestMetrics.successes + 1);
+  else requestMetrics.failures = Math.min(MAX_METRIC, requestMetrics.failures + 1);
+  requestMetrics.bytes = Math.min(MAX_METRIC, requestMetrics.bytes + Math.max(0, info.bytes));
+  requestMetrics.latencyMs = Math.min(MAX_METRIC, requestMetrics.latencyMs + Math.max(0, info.latency));
+}
 
 // Proxy list
 let proxies: ParsedProxy[] = [];
@@ -130,10 +146,15 @@ function load() {
   let list: ParsedProxy[];
   try {
     const content = fs.readFileSync(config.proxyFile, 'utf8');
+    const seen = new Set<string>();
     list = content
       .split('\n')
       .map(parseLine)
-      .filter((p): p is ParsedProxy => p !== null);
+      .filter((p): p is ParsedProxy => {
+        if (!p || seen.has(p.raw)) return false;
+        seen.add(p.raw);
+        return true;
+      });
   } catch (e: unknown) {
     logger.warn({ error: e instanceof Error ? e.message : String(e) }, 'failed to read proxy file');
     return;
@@ -160,6 +181,7 @@ const server = createProxyServer({
   health,
   eventLog,
   getProxies: () => proxies,
+  onRequestMetrics: recordRequestMetrics,
 });
 
 // Dashboard registration — onConfigChange reschedules health check timer on hot-reload
@@ -168,6 +190,7 @@ registerDashboard(server, {
   health,
   db,
   eventLog,
+  getRequestMetrics: () => ({ ...requestMetrics }),
   onConfigChange: () => {
     clearTimeout(_hcTimer);
     _hcTimer = undefined;
@@ -196,14 +219,37 @@ function shutdown(reason = 'SIGTERM') {
     } catch {}
     fileWatcher = undefined;
   }
-  // Close server first — stop accepting new connections, drain in-flight
+  stopIncrementalVacuum();
+  // Two-phase shutdown: stop accepting → drain 5s → force-close → force-exit 10s
+  // Phase 1: server.close() stops accepting new connections, lets in-flight drain.
+  // Phase 2 (5s): closeAllConnections() forcibly closes remaining tunnels/requests.
+  // Phase 3 (10s): force exit as last resort, flushing health first (F5 fix).
   if (server) {
     const forceExit = setTimeout(() => {
+      // Last-resort exit — flush health before dying so no data is lost (F5 fix)
+      try {
+        health.stop();
+        stopIncrementalVacuum();
+        db.close();
+      } catch {}
+      try {
+        const pidPath = path.join(resolveDataDir(), '.winnow.pid');
+        fs.unlinkSync(pidPath);
+      } catch {}
       process.exit(hadUncaughtException ? 1 : 0);
     }, 10_000).unref();
+
+    // After 5s, forcibly close all remaining connections (F4 fix)
+    const drainTimeout = setTimeout(() => {
+      logger.info({}, 'forcing connection close after drain timeout');
+      server.closeAllConnections();
+    }, 5_000).unref();
+
     server.close(() => {
       clearTimeout(forceExit);
+      clearTimeout(drainTimeout);
       health.stop();
+      stopIncrementalVacuum();
       db.close();
       try {
         const pidPath = path.join(resolveDataDir(), '.winnow.pid');
@@ -218,6 +264,7 @@ process.on('uncaughtException', (err) => {
   logger.error({ error: err.message, stack: err.stack }, 'uncaught exception');
   // Flush health store synchronously, then exit quickly
   health.stop(); // flushes pending writes
+  stopIncrementalVacuum();
   db.close();
   try {
     const pidPath = path.join(resolveDataDir(), '.winnow.pid');
@@ -278,33 +325,34 @@ server.on('error', (err: NodeJS.ErrnoException) => {
 });
 try {
   const pidPath = path.join(resolveDataDir(), '.winnow.pid');
-  try {
-    const fd = fs.openSync(pidPath, 'wx');
-    fs.writeSync(fd, String(process.pid));
-    fs.closeSync(fd);
-  } catch {
-    // File already exists — check if process is alive
+  const fd = fs.openSync(pidPath, 'wx');
+  fs.writeSync(fd, String(process.pid));
+  fs.closeSync(fd);
+} catch (e: unknown) {
+  if ((e as NodeJS.ErrnoException).code === 'EEXIST') {
     try {
-      const existingPid = fs.readFileSync(pidPath, 'utf8').trim();
-      if (existingPid) {
+      const existingPid = fs.readFileSync(path.join(resolveDataDir(), '.winnow.pid'), 'utf8').trim();
+      const pid = Number(existingPid);
+      let stale = !Number.isSafeInteger(pid) || pid <= 0;
+      if (!stale) {
         try {
-          process.kill(parseInt(existingPid, 10), 0);
-          console.error(`Another instance already running (PID ${existingPid}). Exiting.`);
+          process.kill(pid, 0);
+          console.error('Another instance already running (PID ' + existingPid + '). Exiting.');
           process.exit(1);
-        } catch (e: unknown) {
-          if ((e as NodeJS.ErrnoException).code !== 'ESRCH') throw e;
-          // Stale PID
-          fs.writeFileSync(pidPath, String(process.pid), 'utf8');
+        } catch (killError: unknown) {
+          const code = (killError as NodeJS.ErrnoException).code;
+          if (code === 'ESRCH') stale = true;
+          else if (code === 'EPERM') {
+            console.error('Another instance is active or inaccessible (PID ' + existingPid + '). Exiting.');
+            process.exit(1);
+          } else throw killError;
         }
-      } else {
-        fs.writeFileSync(pidPath, String(process.pid), 'utf8');
       }
-    } catch {
-      fs.writeFileSync(pidPath, String(process.pid), 'utf8');
+      if (stale) fs.writeFileSync(path.join(resolveDataDir(), '.winnow.pid'), String(process.pid), 'utf8');
+    } catch (checkError) {
+      if ((checkError as NodeJS.ErrnoException).code === 'EPERM') console.error('PID file is inaccessible; refusing to overwrite it.');
     }
   }
-} catch {
-  /* non-fatal */
 }
 // Initial load
 load();
@@ -318,22 +366,42 @@ let _reloadTimer: NodeJS.Timeout | undefined;
 const watchDir = path.dirname(path.resolve(config.proxyFile));
 const watchFile = path.basename(config.proxyFile);
 let _lastMtime = 0;
-try {
-  fileWatcher = fs.watch(watchDir, (_eventType, filename) => {
-    if (filename === watchFile || filename === null) {
-      clearTimeout(_reloadTimer);
-      _reloadTimer = setTimeout(() => load(), 300);
-    } else {
+function setupWatcher() {
+  if (shuttingDown) return;
+  try {
+    fileWatcher?.close();
+  } catch {}
+  fileWatcher = undefined;
+  try {
+    const watcher = fs.watch(watchDir, (_eventType, filename) => {
+      if (filename === watchFile || filename === null) {
+        clearTimeout(_reloadTimer);
+        _reloadTimer = setTimeout(() => load(), 300);
+      } else {
+        try {
+          const mtime = fs.statSync(config.proxyFile).mtimeMs;
+          if (mtime > _lastMtime) {
+            _lastMtime = mtime;
+            clearTimeout(_reloadTimer);
+            _reloadTimer = setTimeout(() => load(), 300);
+          }
+        } catch {}
+      }
+    });
+    // Runtime watcher errors (inotify instance/dir limits, watched dir
+    // deleted) are emitted as 'error' events — without a handler they throw
+    // and kill the process. Log, drop the dead watcher, retry with backoff.
+    watcher.on('error', (err: Error) => {
+      logger.warn({ dir: watchDir, error: err.message }, 'proxy file watcher error — hot-reload paused, retrying');
       try {
-        const mtime = fs.statSync(config.proxyFile).mtimeMs;
-        if (mtime > _lastMtime) {
-          _lastMtime = mtime;
-          clearTimeout(_reloadTimer);
-          _reloadTimer = setTimeout(() => load(), 300);
-        }
+        watcher.close();
       } catch {}
-    }
-  });
-} catch (e: unknown) {
-  logger.warn({ dir: watchDir, error: e instanceof Error ? e.message : String(e) }, 'could not watch proxy directory');
+      if (fileWatcher === watcher) fileWatcher = undefined;
+      if (!shuttingDown) setTimeout(setupWatcher, 5000).unref();
+    });
+    fileWatcher = watcher;
+  } catch (e: unknown) {
+    logger.warn({ dir: watchDir, error: e instanceof Error ? e.message : String(e) }, 'could not watch proxy directory');
+  }
 }
+setupWatcher();

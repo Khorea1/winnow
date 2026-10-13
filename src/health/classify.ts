@@ -86,7 +86,8 @@ export function applyFailure(
     }
   } else {
     h.errors = Math.min(h.errors + 1, 1000);
-    h.bannedUntil = now + transientBanMs(h.errors, config.banBaseMs, config.banMultiplier, config.banMaxMs);
+    // Never truncate a longer fatal ban with a shorter transient one.
+    h.bannedUntil = Math.max(h.bannedUntil, now + transientBanMs(h.errors, config.banBaseMs, config.banMultiplier, config.banMaxMs));
   }
 }
 

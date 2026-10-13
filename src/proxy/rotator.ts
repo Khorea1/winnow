@@ -3,7 +3,7 @@ import type { RotatorConfig } from '../config/index.js';
 import { EventLog } from '../events.js';
 import { classifyError, type HealthStore } from '../health/index.js';
 import { createLogger } from '../logger.js';
-import { dial, type ParsedProxy, parseHostPort } from './dial.js';
+import { type DialMode, dial, isForwardedDial, type ParsedProxy, parseHostPort } from './dial.js';
 import { tlsHandshake } from './tls.js';
 
 const logger = createLogger('rotator');
@@ -62,7 +62,8 @@ export async function tryWithRetry(
   tPort: number,
   eventLog?: EventLog,
   reqId?: string,
-): Promise<{ sock: net.Socket; head: Buffer; upstream: ParsedProxy; latency: number }> {
+  dialMode: DialMode = 'tunnel',
+): Promise<{ sock: net.Socket; head: Buffer; upstream: ParsedProxy; latency: number; forwarded: boolean }> {
   const hostKey = tHost.includes(':') ? `[${tHost}]` : tHost;
   const targetKey = `${hostKey}:${tPort}`;
   const isTargetTracked = config.targets.includes(targetKey);
@@ -76,12 +77,12 @@ export async function tryWithRetry(
     if (sticky) {
       try {
         const start = Date.now();
-        const { sock, head } = await dial(sticky, tHost, tPort, config.timeout);
+        const { sock, head } = await dial(sticky, tHost, tPort, config.timeout, dialMode);
         const latency = Date.now() - start;
         // Renew the affinity window on success
         sessionAffinity.set(targetKey, { raw: sticky.raw, expiresAt: now + config.sessionAffinityMs });
         logger.info({ proxy: sticky.raw, target: targetKey, latency, reqId, sticky: true }, 'upstream dial succeeded (sticky)');
-        return { sock, head, upstream: sticky, latency };
+        return { sock, head, upstream: sticky, latency, forwarded: isForwardedDial(sticky, dialMode) };
       } catch (e: unknown) {
         // Sticky proxy failed — remove affinity, record failure, fall through
         sessionAffinity.delete(targetKey);
@@ -125,14 +126,14 @@ export async function tryWithRetry(
   for (const upstream of candidates) {
     const start = Date.now();
     try {
-      const { sock, head } = await dial(upstream, tHost, tPort, config.timeout);
+      const { sock, head } = await dial(upstream, tHost, tPort, config.timeout, dialMode);
       const latency = Date.now() - start;
       logger.info({ proxy: upstream.raw, target: targetKey, latency, reqId }, 'upstream dial succeeded');
       // Record session affinity on successful dial
       if (config.sessionAffinityMs > 0) {
         sessionAffinity.set(targetKey, { raw: upstream.raw, expiresAt: Date.now() + config.sessionAffinityMs });
       }
-      return { sock, head, upstream, latency };
+      return { sock, head, upstream, latency, forwarded: isForwardedDial(upstream, dialMode) };
     } catch (e: unknown) {
       lastErr = e;
       const errClass = classifyError(e);
@@ -181,7 +182,7 @@ export async function healthCheckTick(proxies: ParsedProxy[], health: HealthStor
       const { sock } = await dial(p, parsed.host, parsed.port, config.timeout);
       if (TLS_PORTS[parsed.port]) {
         try {
-          const tlsRes = await tlsHandshake(sock, parsed.host, { insecure: !config.validationStrictTLS, timeout: config.timeout });
+          const tlsRes = await tlsHandshake(sock, parsed.host, { insecure: config.validationInsecure, timeout: config.timeout });
           if (!tlsRes.authorized) {
             sock.destroy();
             if (config.validationStrictTLS) {
@@ -231,6 +232,13 @@ export async function healthCheckTick(proxies: ParsedProxy[], health: HealthStor
   } else {
     for (const p of toCheck) {
       await checkOne(p);
+    }
+  }
+  // Sweep expired session-affinity entries to prevent unbounded map growth.
+  if (sessionAffinity.size > 1000) {
+    const now = Date.now();
+    for (const [k, v] of sessionAffinity) {
+      if (now >= v.expiresAt) sessionAffinity.delete(k);
     }
   }
 }

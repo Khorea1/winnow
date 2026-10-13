@@ -73,6 +73,13 @@ export function parseHostPort(input: string, defaultPort = 443): { host: string;
   return { host, port: defaultPort };
 }
 
+// WHATWG URL keeps brackets in `hostname` for IPv6 literals (`[::1]`).
+// `net.connect(port, '[::1]')` never connects nor errors — it hangs until
+// timeout. Strip brackets before dialing.
+export function unwrapProxyHost(host: string): string {
+  return host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+}
+
 // CONNECT handshake uses `timeout` ms (typically 3500). After success the
 // caller's data timeout applies — no separate phase needed.
 export function httpConnect(upstream: ParsedProxy, tHost: string, tPort: number, timeout: number): Promise<{ sock: net.Socket; head: Buffer }> {
@@ -87,7 +94,8 @@ export function httpConnect(upstream: ParsedProxy, tHost: string, tPort: number,
       const token = Buffer.from(`${user}:${u.password}`).toString('base64');
       auth = `Proxy-Authorization: Basic ${token}\r\n`;
     }
-    const sock = net.connect(pp, u.hostname);
+    const proxyHost = unwrapProxyHost(u.hostname);
+    const sock = net.connect(pp, proxyHost);
     let done = false;
     let buf = Buffer.alloc(0);
     const to = setTimeout(() => {
@@ -229,7 +237,8 @@ export function socks5Connect(upstream: ParsedProxy, tHost: string, tPort: numbe
     const u = upstream.url;
     const portNum = parseInt(u.port, 10);
     const pp = !Number.isNaN(portNum) && portNum > 0 ? portNum : 1080;
-    const sock = net.connect(pp, u.hostname);
+    const proxyHost = unwrapProxyHost(u.hostname);
+    const sock = net.connect(pp, proxyHost);
     let done = false;
     const to = setTimeout(() => {
       if (!done) {
@@ -375,7 +384,49 @@ export function socks5Connect(upstream: ParsedProxy, tHost: string, tPort: numbe
   });
 }
 
-export async function dial(upstream: ParsedProxy, h: string, p: number, timeout: number) {
+export type DialMode = 'tunnel' | 'forward';
+
+/** True when dial() will skip the CONNECT handshake for this upstream+mode. */
+export function isForwardedDial(upstream: ParsedProxy, mode: DialMode): boolean {
+  return mode === 'forward' && upstream.proto !== 'socks5' && upstream.proto !== 'socks';
+}
+
+// Plain-HTTP forwarding: open a raw TCP connection to the upstream proxy
+// without a CONNECT handshake. The caller sends an absolute-URI request line
+// (`GET http://host/path`). Used for plain-http targets — some public HTTP
+// proxies refuse CONNECT on port 80.
+export function httpForwardProxy(upstream: ParsedProxy, timeout: number): Promise<{ sock: net.Socket; head: Buffer }> {
+  return new Promise((resolve, reject) => {
+    const u = upstream.url;
+    const portNum = parseInt(u.port, 10);
+    const pp = !Number.isNaN(portNum) && portNum > 0 ? portNum : 8080;
+    const sock = net.connect(pp, unwrapProxyHost(u.hostname));
+    let done = false;
+    const to = setTimeout(() => {
+      if (!done) {
+        done = true;
+        sock.destroy();
+        reject(new Error('timeout forward'));
+      }
+    }, timeout);
+    sock.on('connect', () => {
+      if (!done) {
+        done = true;
+        clearTimeout(to);
+        resolve({ sock, head: Buffer.alloc(0) });
+      }
+    });
+    sock.on('error', (e) => {
+      if (!done) {
+        done = true;
+        clearTimeout(to);
+        reject(e);
+      }
+    });
+  });
+}
+
+export async function dial(upstream: ParsedProxy, h: string, p: number, timeout: number, mode: DialMode = 'tunnel') {
   if (!['http', 'socks5', 'socks'].includes(upstream.proto)) {
     throw new Error(`unsupported proxy protocol: ${upstream.proto}`);
   }
@@ -385,5 +436,6 @@ export async function dial(upstream: ParsedProxy, h: string, p: number, timeout:
   }
   if (upstream.proto === 'socks5' || upstream.proto === 'socks') return socks5Connect(upstream, h, p, timeout);
   if (upstream.proto === 'socks4' || upstream.proto === 'socks4a') throw new Error('SOCKS4 not supported');
+  if (isForwardedDial(upstream, mode)) return httpForwardProxy(upstream, timeout);
   return httpConnect(upstream, h, p, timeout);
 }

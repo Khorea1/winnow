@@ -15,11 +15,13 @@ export async function httpCheck(
   proxyRaw: string,
   targetUrl: string,
   opts: {
-    connectTimeout: number;
+    connectTimeoutMs: number;
+    timeoutMs: number;
     maxLatency: number;
     insecure: boolean;
     strictTLS: boolean;
     anonCheck: boolean;
+    abortSignal?: AbortSignal;
   },
 ): Promise<HttpCheckResult> {
   const parsedProxy = parseLine(proxyRaw);
@@ -39,9 +41,26 @@ export async function httpCheck(
   let ttfb = 0;
 
   // Dial via proxy
-  const { sock } = await dial(parsedProxy, tHost, tPort, opts.connectTimeout * 1000);
+  const { sock } = await dial(parsedProxy, tHost, tPort, opts.connectTimeoutMs);
 
   let socket: net.Socket | tls.TLSSocket = sock as net.Socket;
+
+  // Abort must destroy sockets — otherwise withAbort() only wins the race
+  // while the connection leaks until its own timeout.
+  const onAbort = () => {
+    try {
+      socket.destroy();
+    } catch {}
+    try {
+      sock.destroy();
+    } catch {}
+  };
+  if (opts.abortSignal?.aborted) {
+    onAbort();
+    throw new Error('aborted');
+  }
+  opts.abortSignal?.addEventListener('abort', onAbort, { once: true });
+  const unwatchAbort = () => opts.abortSignal?.removeEventListener('abort', onAbort);
 
   // If target is HTTPS, wrap the connection in TLS once (single TLSSocket, no pre-check)
   if (isHttps) {
@@ -76,7 +95,7 @@ export async function httpCheck(
           sock.destroy();
         } catch {}
         reject(new Error('TLS timeout'));
-      }, opts.connectTimeout * 1000);
+      }, opts.connectTimeoutMs);
     });
     socket = tlsSocket;
   }
@@ -91,6 +110,7 @@ export async function httpCheck(
       if (done) return;
       done = true;
       clearTimeout(timeout);
+      unwatchAbort();
       const totalLatency = Date.now() - start;
       let full = buf.toString();
       let headerEndIdx = full.indexOf('\r\n\r\n');
@@ -137,12 +157,13 @@ export async function httpCheck(
     const timeout = setTimeout(() => {
       if (!done) {
         done = true;
+        unwatchAbort();
         try {
           socket.destroy();
         } catch {}
         reject(new Error('HTTP timeout'));
       }
-    }, opts.maxLatency + 5000);
+    }, opts.timeoutMs);
 
     const onData = (chunk: Buffer) => {
       if (done) return;
@@ -152,6 +173,7 @@ export async function httpCheck(
       }
       if (buf.length + chunk.length > 2 * 1024 * 1024) {
         done = true;
+        unwatchAbort();
         socket.destroy();
         reject(new Error('response too large'));
         return;
@@ -187,6 +209,7 @@ export async function httpCheck(
       if (!done) {
         done = true;
         clearTimeout(timeout);
+        unwatchAbort();
         try {
           socket.destroy();
         } catch {}
@@ -202,6 +225,7 @@ export async function httpCheck(
       if (!done) {
         done = true;
         clearTimeout(timeout);
+        unwatchAbort();
         try {
           socket.destroy();
         } catch {}

@@ -61,6 +61,21 @@ describe('EventLog', () => {
     log.clear();
     assert.equal(log.all.length, 0);
   });
+  it('clear retains subscribers and emits no notification', async () => {
+    const log = new EventLog();
+    let received = 0;
+    log.subscribe(() => received++);
+    log.push({ type: 'connect', proxy: 'before', target: 't', status: 'attempt' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(received, 1);
+    log.clear();
+    assert.equal(log.all.length, 0);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(received, 1);
+    log.push({ type: 'connect', proxy: 'after', target: 't', status: 'attempt' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(received, 2);
+  });
 
   it('subscribe receives events', async () => {
     const log = new EventLog(100);

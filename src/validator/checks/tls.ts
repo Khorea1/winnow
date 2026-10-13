@@ -13,29 +13,46 @@ export async function tlsCheck(
   targetHost: string,
   targetPort: number,
   opts: {
-    connectTimeout: number;
+    connectTimeoutMs: number;
     insecure: boolean;
     strictTLS: boolean;
+    abortSignal?: AbortSignal;
   },
 ): Promise<TlsCheckResult> {
   const parsedProxy = parseLine(proxyRaw);
   if (!parsedProxy) throw new Error('invalid format');
 
-  const { sock } = await dial(parsedProxy, targetHost, targetPort, opts.connectTimeout * 1000);
-  const res = await tlsHandshake(sock, targetHost, { insecure: opts.insecure, timeout: opts.connectTimeout * 1000 });
-
-  const selfSigned = isSoftTlsError(res);
-
-  if (opts.strictTLS && !res.authorized) {
-    const err = new Error(`TLS invalid/self-signed: ${res.authorizationError || 'unauthorized'}`);
-    Object.assign(err, { tlsResult: res });
-    throw err;
-  }
-
-  return {
-    authorized: res.authorized,
-    error: res.authorizationError,
-    selfSigned,
-    protocol: res.protocol,
+  const { sock } = await dial(parsedProxy, targetHost, targetPort, opts.connectTimeoutMs);
+  // Abort destroys the in-handshake socket so the TLS layer settles promptly
+  // instead of leaking until its own timeout.
+  const onAbort = () => {
+    try {
+      sock.destroy();
+    } catch {}
   };
+  if (opts.abortSignal?.aborted) {
+    onAbort();
+    throw new Error('aborted');
+  }
+  opts.abortSignal?.addEventListener('abort', onAbort, { once: true });
+  try {
+    const res = await tlsHandshake(sock, targetHost, { insecure: opts.insecure, timeout: opts.connectTimeoutMs });
+
+    const selfSigned = isSoftTlsError(res);
+
+    if (opts.strictTLS && !res.authorized) {
+      const err = new Error(`TLS invalid/self-signed: ${res.authorizationError || 'unauthorized'}`);
+      Object.assign(err, { tlsResult: res });
+      throw err;
+    }
+
+    return {
+      authorized: res.authorized,
+      error: res.authorizationError,
+      selfSigned,
+      protocol: res.protocol,
+    };
+  } finally {
+    opts.abortSignal?.removeEventListener('abort', onAbort);
+  }
 }

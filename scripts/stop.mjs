@@ -33,13 +33,15 @@ try {
 const start = Date.now();
 const TIMEOUT = 12_000;
 while (Date.now() - start < TIMEOUT) {
-  await new Promise(r => setTimeout(r, 500));
+  await new Promise((r) => setTimeout(r, 500));
   try {
     process.kill(pid, 0);
   } catch {
     // Process is gone
     console.log('Process stopped gracefully.');
-    try { fs.unlinkSync(pidPath); } catch {}
+    try {
+      fs.unlinkSync(pidPath);
+    } catch {}
     process.exit(0);
   }
 }
@@ -49,7 +51,9 @@ console.log('Force killing...');
 try {
   process.kill(pid, 'SIGKILL');
   console.log('Process killed.');
-  try { fs.unlinkSync(pidPath); } catch {}
+  try {
+    fs.unlinkSync(pidPath);
+  } catch {}
   process.exit(0);
 } catch {
   console.error('Could not kill process.');

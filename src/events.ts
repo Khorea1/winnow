@@ -44,7 +44,9 @@ export class EventLog {
     } else {
       this._tail = (this._tail + 1) % this._max;
     }
-    // Notify listeners — failures must never crash the app
+    // Notify listeners on the next microtask — defers execution so listener
+    // errors never crash the calling code path (e.g. a data handler), and
+    // the listener array is snapshotted here to stay stable across the deferral.
     if (this.listeners.size > 0) {
       const listeners = [...this.listeners];
       queueMicrotask(() => {
@@ -90,6 +92,5 @@ export class EventLog {
     this._head = 0;
     this._tail = 0;
     this._size = 0;
-    this.listeners.clear(); // Also clear listeners
   }
 }

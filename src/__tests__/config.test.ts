@@ -29,6 +29,9 @@ describe('DEFAULTS', () => {
   it('healthCheckParallel defaults to true', () => {
     assert.equal(DEFAULTS.healthCheckParallel, true);
   });
+  it('defaults maxConnections to 1000', () => {
+    assert.equal(DEFAULTS.maxConnections, 1000);
+  });
 
   it('has expected ban defaults', () => {
     assert.equal(DEFAULTS.banBaseMs, 30000);
@@ -66,6 +69,7 @@ describe('DEFAULTS', () => {
       'healthCheckParallel',
       'sessionAffinityMs',
       'preConnectJitterMs',
+      'maxConnections',
     ];
     for (const f of requiredFields) {
       assert.ok(f in DEFAULTS, `DEFAULTS missing ${f}`);
@@ -276,6 +280,12 @@ describe('updateConfig', () => {
 });
 
 describe('updateConfig health check', () => {
+  it('sanitizes maxConnections and permits hot reload updates', () => {
+    const updated = updateConfig({ maxConnections: 42 }, DEFAULTS);
+    assert.equal(updated.maxConnections, 42);
+    const invalid = updateConfig({ maxConnections: -1 }, DEFAULTS);
+    assert.equal(invalid.maxConnections, 1000);
+  });
   let configDir: string;
   let origWinnowConfig: string | undefined;
 

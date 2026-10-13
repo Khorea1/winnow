@@ -42,7 +42,11 @@ export type HealthRow = {
 export function initDb(dbPath: string): DatabaseType {
   const db = new Database(dbPath);
 
-  db.pragma('journal_mode = WAL');
+  try {
+    db.pragma('journal_mode = WAL');
+  } catch {
+    db.pragma('journal_mode = DELETE');
+  }
   db.pragma('synchronous = NORMAL');
   db.pragma('auto_vacuum = INCREMENTAL');
   db.pragma('wal_autocheckpoint = 500');
@@ -66,6 +70,31 @@ export function initDb(dbPath: string): DatabaseType {
 
   return db;
 }
+
+const DEFAULT_MAINTENANCE_INTERVAL_MS = 5 * 60 * 1000;
+
+/** Run SQLite incremental vacuum periodically; call the returned function to stop it. */
+export function startIncrementalVacuum(db: DatabaseType, intervalMs = DEFAULT_MAINTENANCE_INTERVAL_MS): () => void {
+  let stopped = false;
+  const timer = setInterval(() => {
+    try {
+      db.pragma('incremental_vacuum');
+    } catch {
+      // A closed database cannot be maintained; stop rather than leak a failing timer.
+      stop();
+    }
+  }, intervalMs);
+  timer.unref();
+
+  function stop() {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(timer);
+  }
+
+  return stop;
+}
+
 interface StmtCache {
   upsertHealth: Statement<unknown[]>;
   deleteHealth: Statement<[string]>;

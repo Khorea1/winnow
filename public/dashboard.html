@@ -22,10 +22,10 @@
       <span class="status-chip mono" id="live-clock">--:--:--</span>
       <span class="status-chip busy" id="running-chip" style="display:none" data-i18n="validatingChip">validação em andamento</span>
       <div class="topbar-controls">
-        <div class="lang-switch" id="lang-switch" role="group" aria-label="Language / Idioma">
+        <fieldset class="lang-switch" id="lang-switch" aria-label="Language / Idioma">
           <button class="lang-btn" data-lang="pt" type="button">PT</button>
           <button class="lang-btn" data-lang="en" type="button">EN</button>
-        </div>
+        </fieldset>
         <button class="sidebar-toggle" id="sidebar-toggle" type="button" aria-label="Esconder painel de configuração" title="Esconder configurações">
           <span class="icon" aria-hidden="true">▶</span>
           <span class="icon-label" id="sidebar-toggle-label" data-i18n="sidebarHideLabel">Esconder</span>
@@ -65,12 +65,12 @@
         <header class="card-head">
           <h2><span data-i18n="poolTitle">Pool de proxies</span> <span class="count" id="pool-count"></span></h2>
           <div class="tools">
-            <div class="filter-chips" id="filter-chips" role="group" data-i18n-aria="filterAriaGroup" aria-label="Filtrar por estado">
+            <fieldset class="filter-chips" id="filter-chips" data-i18n-aria="filterAriaGroup" aria-label="Filtrar por estado">
               <button class="filter-chip ok" data-status="ok" type="button"><span data-i18n="filterChipOk">ok</span> <span class="count" data-status="ok"></span></button>
               <button class="filter-chip warn" data-status="warn" type="button"><span data-i18n="filterChipWarn">lento</span> <span class="count" data-status="warn"></span></button>
               <button class="filter-chip err" data-status="err" type="button"><span data-i18n="filterChipErr">erro</span> <span class="count" data-status="err"></span></button>
               <button class="filter-chip ban" data-status="ban" type="button"><span data-i18n="filterChipBan">banido</span> <span class="count" data-status="ban"></span></button>
-            </div>
+            </fieldset>
             <div class="search-wrap"><input id="proxy-filter" type="text" data-i18n-placeholder="filterPlaceholder" placeholder="filtrar (Ctrl+K)" spellcheck="false" data-i18n-aria="filterAriaInput" aria-label="Filtrar proxies"></div>
             <button class="icon-btn" id="btn-copy-all" type="button" data-i18n-title="copyAllTitle" title="Copiar proxies filtrados" aria-label="Copiar proxies filtrados">⧉</button>
           </div>
@@ -95,7 +95,7 @@
           <div class="table-note" id="table-note"></div>
         </div>
         <div class="trend-wrap">
-          <svg id="trend-svg" viewBox="0 0 600 64" preserveAspectRatio="none"></svg>
+          <svg id="trend-svg" viewBox="0 0 600 64" preserveAspectRatio="none" role="img" aria-label="Tendência de latência e erros"></svg>
           <div class="trend-labels"><span data-i18n="trendLatency">latência média (ms)</span><span data-i18n="trendErrors">erros acumulados</span></div>
         </div>
       </article>
@@ -141,7 +141,7 @@
       <article class="card">
         <header class="card-head"><h2 data-i18n="rotatorConfigTitle">Configuração do rotator</h2></header>
         <div class="card-body pad">
-          <div class="field"><label data-i18n="proxyFileLabel">Arquivo de proxies</label><div class="readonly-field" id="cfg-file-readonly">—</div><div class="hint" data-i18n="proxyFileHint">Definido por linha de comando ou variável de ambiente ao iniciar o processo — não é editável por aqui.</div></div>
+          <div class="field"><span data-i18n="proxyFileLabel">Arquivo de proxies</span><div class="readonly-field" id="cfg-file-readonly">—</div><div class="hint" data-i18n="proxyFileHint">Definido por linha de comando ou variável de ambiente ao iniciar o processo — não é editável por aqui.</div></div>
           <div class="field-row">
             <div class="field"><label for="cfg-retries" data-i18n="retriesLabel">Retries</label><input type="number" id="cfg-retries" class="mono" min="1" max="20" value="5"><div class="hint" data-i18n="retriesHint">tentativas por requisição</div></div>
             <div class="field"><label for="cfg-maxErrors" data-i18n="maxErrorsLabel">Máx. erros</label><input type="number" id="cfg-maxErrors" class="mono" min="0" max="100" value="3"><div class="hint" data-i18n="maxErrorsHint">acima disso, proxy é ignorado</div></div>
@@ -210,6 +210,6 @@
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-<script src="/dashboard.js" defer></script>
+<script type="module" src="/dashboard.js"></script>
 </body>
 </html>

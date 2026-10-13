@@ -11,14 +11,14 @@
     "start": "node dist/index.js",
     "validator": "node dist/validator/index.js",
     "dev": "tsx watch src/index.ts",
-    "test": "tsx --test src/__tests__/*.test.ts",
+    "test": "tsx --test \"src/**/*.test.ts\" \"src/**/*.test.js\"",
     "typecheck": "tsc --noEmit",
-    "lint": "biome check src/",
-    "lint:fix": "biome check --write src/",
+    "lint": "biome check src/ scripts/ public/",
+    "lint:fix": "biome check --write src/ scripts/ public/",
     "stop": "node scripts/stop.mjs",
     "stop:docker": "docker compose stop",
-    "format": "biome format --write src/",
-    "check": "biome check src/ && tsc --noEmit && tsx --test src/__tests__/*.test.ts"
+    "format": "biome format --write src/ scripts/ public/",
+    "check": "biome check src/ scripts/ public/ && tsc --noEmit && tsx --test \"src/**/*.test.ts\" \"src/**/*.test.js\""
   },
   "engines": {
     "node": ">=22"

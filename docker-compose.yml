@@ -4,7 +4,7 @@
 #   docker compose logs -f
 
 volumes:
-  rotator-data:
+  winnow-data:
     # Named volume; replace with a bind mount for easier file editing:
     # driver: local
     # driver_opts:
@@ -13,25 +13,29 @@ volumes:
     #   o: bind
 
 services:
-  rotator:
+  winnow:
+    image: winnow:latest
     build:
       context: .
       dockerfile: Dockerfile
     ports:
       - "8080:8080"
     volumes:
-      - rotator-data:/srv/data
+      - winnow-data:/srv/data
       # Optional: bind your proxy file directly:
       # - ./scrapped.txt:/srv/data/scrapped.txt:ro
     environment:
       - WINNOW_DATA_DIR=/srv/data
       - WINNOW_CONFIG=/srv/data/config.json
       - WINNOW_PORT=8080
-      # You can also override proxy file at runtime:
+      # Optional dashboard auth tokens; each variable passes through when set on the host:
+      - WINNOW_TOKEN
+      - DASHBOARD_TOKEN
+      - API_TOKEN
       # - WINNOW_PROXY_FILE=/srv/data/scrapped.txt
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:8080/__stats',r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>process.exit(d.includes('total')?0:1))}).on('error',()=>process.exit(1))\""]
+      test: ["CMD-SHELL", "node -e \"const t=process.env.WINNOW_TOKEN||process.env.DASHBOARD_TOKEN||process.env.API_TOKEN;require('http').get('http://localhost:8080/__stats',t?{headers:{Authorization:'Bearer '+t}}:{},r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>process.exit(r.statusCode===200&&d.includes('total')?0:1))}).on('error',()=>process.exit(1))\""]
       interval: 30s
       timeout: 5s
       retries: 3

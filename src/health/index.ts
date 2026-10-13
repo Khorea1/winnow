@@ -29,6 +29,11 @@ export class HealthStore extends EventEmitter {
   private _data: Map<string, Map<string, HealthEntry>> = new Map();
   private _dirty: Set<string> = new Set();
   private _deleted: Set<string> = new Set();
+  // Tombstones guard against zombie resurrection: an in-flight dial that fails
+  // after delete() must not recreate the row. recordSuccess/recordFailure drop
+  // events for tombstoned proxies with no entry; explicit set()/load() clears
+  // the tombstone so re-added proxies behave like brand-new ones.
+  private _tombstones: Map<string, number> = new Map();
   private _timer: NodeJS.Timeout;
   private _eventLog?: EventLog;
   private _pendingUpdates: Set<string> = new Set();
@@ -48,6 +53,7 @@ export class HealthStore extends EventEmitter {
   }
 
   set(proxy: string, val: HealthEntry) {
+    this._tombstones.delete(proxy);
     let byTarget = this._data.get(proxy);
     if (!byTarget) {
       byTarget = new Map();
@@ -74,6 +80,14 @@ export class HealthStore extends EventEmitter {
   delete(proxy: string) {
     this._data.delete(proxy);
     this._deleted.add(proxy);
+    this._tombstones.set(proxy, Date.now());
+    // Bound tombstone memory — drop entries older than 1h once over cap.
+    if (this._tombstones.size > 5000) {
+      const cutoff = Date.now() - 3600_000;
+      for (const [p, t] of this._tombstones) {
+        if (t < cutoff) this._tombstones.delete(p);
+      }
+    }
     // Clean up any pending dirty keys for this proxy
     const prefix = `${proxy}\x00`;
     for (const key of this._dirty) {
@@ -95,6 +109,7 @@ export class HealthStore extends EventEmitter {
   }
 
   setTarget(proxy: string, target: string, val: HealthEntry) {
+    this._tombstones.delete(proxy);
     let byTarget = this._data.get(proxy);
     if (!byTarget) {
       byTarget = new Map();
@@ -149,6 +164,8 @@ export class HealthStore extends EventEmitter {
   // A proxy that works for ANY target is better than one that works for none.
 
   recordSuccess(proxy: string, target: string | undefined, latency: number, now = Date.now()) {
+    if (!this._data.has(proxy) && this._tombstones.has(proxy)) return; // stale event after delete()
+    this._tombstones.delete(proxy);
     const star = ensureStarEntry(this, proxy);
     applySuccess(star, latency, now);
     if (target) {
@@ -177,6 +194,8 @@ export class HealthStore extends EventEmitter {
     config: { maxFatalErrors: number; fatalBanMs: number; banBaseMs: number; banMultiplier: number; banMaxMs: number },
     now = Date.now(),
   ) {
+    if (!this._data.has(proxy) && this._tombstones.has(proxy)) return; // stale event after delete()
+    this._tombstones.delete(proxy);
     const star = ensureStarEntry(this, proxy);
     const wasBanned = star.bannedUntil > now;
     const wasFrozen = star.frozenUntil > now;
@@ -250,7 +269,9 @@ export class HealthStore extends EventEmitter {
     let count = 0;
     for (const [proxy, byTarget] of this._data) {
       for (const [target, e] of byTarget) {
-        if (e.frozenUntil > 0) {
+        // Only live freezes are demoted. An already-expired freeze means the
+        // proxy is usable — re-banning it here would punish a healthy proxy.
+        if (e.frozenUntil > now) {
           e.frozenUntil = 0;
           e.bannedUntil = demotedTo;
           this._dirty.add(this._key(proxy, target));
@@ -359,6 +380,8 @@ export class HealthStore extends EventEmitter {
       }
     }
     if (count) logger.info({ count, totalProxies: this._data.size }, 'loaded health rows');
+    // Boot state wins over session tombstones (e.g. after load() refresh).
+    for (const p of this._data.keys()) this._tombstones.delete(p);
   }
 
   private _flush() {
@@ -398,13 +421,11 @@ export class HealthStore extends EventEmitter {
         const target = key.slice(sep + 1);
         const byTarget = this._data.get(proxy);
         if (!byTarget) {
-          failedKeys.add(key);
-          continue;
+          continue; // proxy deleted — nothing to flush, drop the key
         }
         const h = byTarget.get(target);
         if (!h) {
-          failedKeys.add(key);
-          continue;
+          continue; // target entry gone — nothing to flush, drop the key
         }
         rows.push({
           proxy,

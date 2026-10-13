@@ -8,7 +8,7 @@ const logger = createLogger('ssrf');
 // Blocked ranges for proxy CONNECT/HTTP targets:
 // IPv4: loopback 127/8, link-local 169.254/16, RFC 1918 (10/8, 172.16/12,
 // 192.168/16), RFC 6598 CGNAT (100.64/10). Hostnames: localhost, *.local,
-// *.internal. IPv6: loopback ::1, IPv4-mapped private ranges via ::ffff:.
+// *.internal. IPv6: loopback ::1, link-local fe80::/10, IPv4-mapped private ranges via ::ffff:.
 // ULA (fc00::/7) is NOT blocked — internal networks legitimately use it.
 
 function normalizeIPv6(host: string): string {
@@ -47,9 +47,10 @@ function normalizeIPv6(host: string): string {
 }
 
 export function isBlockedTarget(host: string): boolean {
-  // Strip IPv6 zone ID (e.g. fe80::1%eth0 → fe80::1)
-  const zoneIdx = host.indexOf('%');
-  const cleanHost = zoneIdx !== -1 ? host.slice(0, zoneIdx) : host;
+  // Remove brackets from IPv6 URL hostnames and strip any zone ID.
+  const unbracketedHost = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+  const zoneIdx = unbracketedHost.indexOf('%');
+  const cleanHost = zoneIdx !== -1 ? unbracketedHost.slice(0, zoneIdx) : unbracketedHost;
   // Hostname-based blocking (SSRF prevention for internal hostnames)
   const lower = cleanHost.toLowerCase();
   if (lower === 'localhost' || lower === 'localhost.localdomain' || lower === '127.0.0.1' || lower === '::1' || lower === '0.0.0.0' || lower === '::')
@@ -70,9 +71,11 @@ export function isBlockedTarget(host: string): boolean {
   // IPv6 checks
   if (net.isIPv6(cleanHost)) {
     const normalized = normalizeIPv6(cleanHost);
+    // The first 10 bits identify fe80::/10; retain normalized form for remaining checks.
+    const firstGroup = Number.parseInt(normalized, 16);
+    if ((firstGroup & 0xffc0) === 0xfe80) return true; // IPv6 link-local fe80::/10
     // IPv6 loopback full form (both ::1 and zero-padded forms)
     if (normalized === '0:0:0:0:0:0:0:1') return true;
-
     // Handle all forms of embedded IPv4 addresses for SSRF prevention:
     // - IPv4-mapped IPv6 (::ffff:1.2.3.4 → 1.2.3.4)
     // - Expanded forms (0:0:0:0:0:ffff:1.2.3.4)
@@ -124,6 +127,13 @@ export function isBlockedTarget(host: string): boolean {
 export async function isBlockedAfterDns(host: string): Promise<boolean> {
   // Skip DNS resolution for bare IPs — already covered by isBlockedTarget
   if (net.isIPv4(host) || net.isIPv6(host)) return false;
+  // KNOWN LIMITATION (DNS-rebinding TOCTOU): this resolves the target once
+  // for the check, but net.connect re-resolves at connect time. An
+  // attacker-controlled DNS that answers the check with a public IP and the
+  // connect with a private IP slips through. A full fix resolves once and
+  // connects by IP (preserving SNI/Host) across every dial path; until then,
+  // run behind trusted DNS or firewall egress to mitigate. See README.
+  let timer: NodeJS.Timeout | undefined;
   try {
     // Fast path: if the hostname is already blocked by string rules, block it
     if (isBlockedTarget(host)) return true;
@@ -131,7 +141,8 @@ export async function isBlockedAfterDns(host: string): Promise<boolean> {
     // Use 1-second timeout to avoid slow DNS on non-existent hostnames
     const lookupPromise = dns.promises.lookup(host, { all: true });
     const timeoutPromise = new Promise<dns.LookupAddress[]>((_, reject) => {
-      setTimeout(() => reject(new Error('DNS lookup timed out')), 1000);
+      timer = setTimeout(() => reject(new Error('DNS lookup timed out')), 1000);
+      timer.unref?.();
     });
     const addresses = await Promise.race([lookupPromise, timeoutPromise]);
     // dns.lookup returns either a single { address, family } or array thereof
@@ -143,5 +154,7 @@ export async function isBlockedAfterDns(host: string): Promise<boolean> {
   } catch {
     logger.warn({ host }, 'SSRF DNS check failed, allowing through (connection will fail at dial layer)');
     return false;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }

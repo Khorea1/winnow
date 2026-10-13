@@ -65,7 +65,8 @@ function createDb(): Database.Database {
 }
 
 /**
- * Start a minimal HTTP forward proxy that accepts CONNECT to any host:port.
+ * Start a minimal HTTP forward proxy that accepts CONNECT to any host:port
+ * AND absolute-URI forwarding (dual-mode, like real public HTTP proxies).
  * Used as an upstream proxy in the pool.
  */
 function startUpstreamProxy(): Promise<{ server: http.Server; port: number }> {
@@ -74,6 +75,36 @@ function startUpstreamProxy(): Promise<{ server: http.Server; port: number }> {
     port: number;
   }>();
   const server = http.createServer();
+  server.on('request', (req, res) => {
+    // Absolute-URI forwarding: rewrite to origin-form toward the target.
+    let target: URL;
+    try {
+      target = new URL(req.url || '');
+    } catch {
+      res.writeHead(400);
+      res.end();
+      return;
+    }
+    if (!target.hostname) {
+      res.writeHead(400);
+      res.end();
+      return;
+    }
+    const host = target.hostname === TARGET_HOST ? '127.0.0.1' : target.hostname;
+    const port = parseInt(target.port, 10) || 80;
+    const headers = { ...req.headers, host: target.host, connection: 'close' };
+    const up = http.request({ host, port, method: req.method, path: target.pathname + target.search, headers }, (upRes) => {
+      res.writeHead(upRes.statusCode || 502, upRes.headers);
+      upRes.pipe(res);
+    });
+    up.on('error', () => {
+      try {
+        res.writeHead(502);
+        res.end('Bad Gateway');
+      } catch {}
+    });
+    req.pipe(up);
+  });
   server.on('connect', (req, clientSock, head) => {
     const url = req.url || '';
     const lastColon = url.lastIndexOf(':');
@@ -110,6 +141,63 @@ function startUpstreamProxy(): Promise<{ server: http.Server; port: number }> {
 }
 
 /**
+ * Start an upstream proxy that REFUSES CONNECT (405) but serves absolute-URI
+ * forwarding — mimics public HTTP proxies that reject CONNECT on port 80.
+ * Proves plain-HTTP targets work without ever tunnelling.
+ */
+function startForwardOnlyUpstream(): Promise<{ server: http.Server; port: number; connectAttempts: () => number }> {
+  const { promise, resolve } = Promise.withResolvers<{
+    server: http.Server;
+    port: number;
+    connectAttempts: () => number;
+  }>();
+  let connects = 0;
+  const server = http.createServer();
+  server.on('connect', (_req, sock) => {
+    connects++;
+    try {
+      sock.write('HTTP/1.1 405 Method Not Allowed\r\n\r\n');
+    } catch {}
+    try {
+      sock.destroy();
+    } catch {}
+  });
+  server.on('request', (req, res) => {
+    let target: URL;
+    try {
+      target = new URL(req.url || '');
+    } catch {
+      res.writeHead(400);
+      res.end();
+      return;
+    }
+    if (!target.hostname || req.method === 'CONNECT') {
+      res.writeHead(400);
+      res.end();
+      return;
+    }
+    const host = target.hostname === TARGET_HOST ? '127.0.0.1' : target.hostname;
+    const port = parseInt(target.port, 10) || 80;
+    const headers = { ...req.headers, host: target.host, connection: 'close' };
+    const up = http.request({ host, port, method: req.method, path: target.pathname + target.search, headers }, (upRes) => {
+      res.writeHead(upRes.statusCode || 502, upRes.headers);
+      upRes.pipe(res);
+    });
+    up.on('error', () => {
+      try {
+        res.writeHead(502);
+        res.end('Bad Gateway');
+      } catch {}
+    });
+    req.pipe(up);
+  });
+  server.listen(0, '127.0.0.1', () => {
+    resolve({ server, port: (server.address() as net.AddressInfo).port, connectAttempts: () => connects });
+  });
+  return promise;
+}
+
+/**
  * Send an HTTP request through the proxy and return the response body.
  */
 function httpGetThroughProxy(proxyPort: number, targetHost: string, targetPort: number, path: string): Promise<string> {
@@ -135,6 +223,64 @@ function httpGetThroughProxy(proxyPort: number, targetHost: string, targetPort: 
     req.destroy(new Error('request timeout'));
   });
   req.end();
+  return promise;
+}
+function httpResponseThroughProxy(
+  proxyPort: number,
+  targetHost: string,
+  targetPort: number,
+  method: string,
+  path: string,
+): Promise<{ statusCode: number | undefined; body: string }> {
+  const { promise, resolve, reject } = Promise.withResolvers<{ statusCode: number | undefined; body: string }>();
+  const req = http.request(
+    {
+      host: '127.0.0.1',
+      port: proxyPort,
+      method,
+      path: `http://${targetHost}:${targetPort}${path}`,
+      agent: false,
+    },
+    (res) => {
+      let body = '';
+      res.on('data', (chunk: Buffer) => {
+        body += chunk.toString();
+      });
+      res.on('end', () => resolve({ statusCode: res.statusCode, body }));
+    },
+  );
+  req.on('error', reject);
+  req.setTimeout(5000, () => req.destroy(new Error('request timeout')));
+  req.end();
+  return promise;
+}
+
+function httpPostThroughProxy(proxyPort: number, targetHost: string, targetPort: number, path: string, body: string, fixedLength: boolean): Promise<string> {
+  const { promise, resolve, reject } = Promise.withResolvers<string>();
+  const req = http.request(
+    {
+      host: '127.0.0.1',
+      port: proxyPort,
+      method: 'POST',
+      path: `http://${targetHost}:${targetPort}${path}`,
+      agent: false,
+      ...(fixedLength ? { headers: { 'Content-Length': Buffer.byteLength(body) } } : {}),
+    },
+    (res) => {
+      let data = '';
+      res.on('data', (chunk: Buffer) => {
+        data += chunk.toString();
+      });
+      res.on('end', () => resolve(data));
+    },
+  );
+  req.on('error', reject);
+  req.setTimeout(5000, () => req.destroy(new Error('request timeout')));
+  if (fixedLength) req.end(body);
+  else {
+    req.write(body);
+    req.end();
+  }
   return promise;
 }
 
@@ -173,8 +319,8 @@ describe('proxy server', () => {
     let proxy: http.Server;
     let proxyPort: number;
     let health: HealthStore;
+    let targetStatus = 200;
     let db: Database.Database;
-
     before(async () => {
       // Target echo server
       target = http.createServer((req, res) => {
@@ -183,9 +329,27 @@ describe('proxy server', () => {
           body += c.toString();
         });
         req.on('end', () => {
-          const data = JSON.stringify({ ok: true, method: req.method, path: req.url, body });
+          const noBodyStatus =
+            req.url === '/head-chunked-metadata'
+              ? '200 OK'
+              : req.url === '/no-content-chunked-metadata'
+                ? '204 No Content'
+                : req.url === '/not-modified-chunked-metadata'
+                  ? '304 Not Modified'
+                  : undefined;
+          if (noBodyStatus) {
+            req.socket.end(`HTTP/1.1 ${noBodyStatus}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n`);
+            return;
+          }
+          if (req.url === '/chunked-response') {
+            res.writeHead(200, { 'Content-Type': 'text/plain' });
+            res.write('upstream chunked ');
+            res.end('body');
+            return;
+          }
+          const data = JSON.stringify({ ok: true, method: req.method, path: req.url, body, transferEncoding: req.headers['transfer-encoding'] ?? null });
           const buf = Buffer.from(data, 'utf-8');
-          res.writeHead(200, {
+          res.writeHead(targetStatus, {
             'Content-Type': 'application/json',
             'Content-Length': buf.length.toString(),
           });
@@ -227,8 +391,114 @@ describe('proxy server', () => {
       assert.equal(parsed.method, 'GET');
       assert.equal(parsed.path, '/test');
     });
-  });
 
+    it('forwards chunked POST bodies intact with per-hop framing', { timeout: 5000 }, async () => {
+      const body = await httpPostThroughProxy(proxyPort, TARGET_HOST, targetPort, '/chunked-request', 'chunked request body', false);
+      const parsed = JSON.parse(body);
+      assert.equal(parsed.body, 'chunked request body');
+      assert.equal(parsed.transferEncoding, 'chunked');
+    });
+
+    it('preserves fixed-length POST request bodies', { timeout: 5000 }, async () => {
+      const body = await httpPostThroughProxy(proxyPort, TARGET_HOST, targetPort, '/fixed-request', 'fixed request body', true);
+      const parsed = JSON.parse(body);
+      assert.equal(parsed.body, 'fixed request body');
+      assert.equal(parsed.transferEncoding, null);
+    });
+
+    it('decodes and reframes chunked upstream response bodies', { timeout: 5000 }, async () => {
+      const body = await httpGetThroughProxy(proxyPort, TARGET_HOST, targetPort, '/chunked-response');
+      assert.equal(body, 'upstream chunked body');
+    });
+    it('does not expect or forward chunked bodies for HEAD, 204, or 304 responses', { timeout: 5000 }, async () => {
+      const responses = await Promise.all([
+        httpResponseThroughProxy(proxyPort, TARGET_HOST, targetPort, 'HEAD', '/head-chunked-metadata'),
+        httpResponseThroughProxy(proxyPort, TARGET_HOST, targetPort, 'GET', '/no-content-chunked-metadata'),
+        httpResponseThroughProxy(proxyPort, TARGET_HOST, targetPort, 'GET', '/not-modified-chunked-metadata'),
+      ]);
+
+      assert.deepEqual(responses, [
+        { statusCode: 200, body: '' },
+        { statusCode: 204, body: '' },
+        { statusCode: 304, body: '' },
+      ]);
+    });
+
+    it('records upstream 5xx as failure without recording success', { timeout: 5000 }, async () => {
+      targetStatus = 503;
+      const proxyUrl = `http://127.0.0.1:${upstreamPort}`;
+      const beforeErrors = health.get(proxyUrl)!.errors;
+      const beforeSuccesses = health.get(proxyUrl)!.successes;
+
+      try {
+        await httpGetThroughProxy(proxyPort, TARGET_HOST, targetPort, '/unavailable');
+      } finally {
+        targetStatus = 200;
+      }
+
+      const after = health.get(proxyUrl)!;
+      assert.equal(after.errors, beforeErrors + 1);
+      assert.equal(after.successes, beforeSuccesses);
+    });
+  });
+  // ── HTTP forwarding without CONNECT ────────────────────
+  describe('HTTP forwarding without CONNECT', () => {
+    let target: http.Server;
+    let targetPort: number;
+    let upstream: http.Server;
+    let upstreamPort: number;
+    let connectAttempts: () => number;
+    let proxy: http.Server;
+    let proxyPort: number;
+    let health: HealthStore;
+    let db: Database.Database;
+    before(async () => {
+      target = http.createServer((req, res) => {
+        let body = '';
+        req.on('data', (c: Buffer) => {
+          body += c.toString();
+        });
+        req.on('end', () => {
+          const data = JSON.stringify({ ok: true, method: req.method, path: req.url, body });
+          const buf = Buffer.from(data, 'utf-8');
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': buf.length.toString() });
+          res.end(buf);
+        });
+      });
+      targetPort = await listen(target);
+      const up = await startForwardOnlyUpstream();
+      upstream = up.server;
+      upstreamPort = up.port;
+      connectAttempts = up.connectAttempts;
+
+      db = createDb();
+      health = new HealthStore(db, { pruneAfterMs: 0, fatalBanMs: 300_000 });
+      const proxyUrl = `http://127.0.0.1:${upstreamPort}`;
+      health.set(proxyUrl, blankEntry());
+
+      proxy = createProxyServer({
+        config: { current: { ...BASE_CONFIG } },
+        health,
+        getProxies: () => [proxyFromUrl(proxyUrl)],
+      });
+      proxyPort = await listen(proxy);
+    });
+    after(() => {
+      health?.stop();
+      proxy?.close();
+      upstream?.close();
+      target?.close();
+      db?.close();
+    });
+    it('forwards plain-HTTP GET without sending CONNECT', { timeout: 5000 }, async () => {
+      const body = await httpGetThroughProxy(proxyPort, TARGET_HOST, targetPort, '/test');
+      const parsed = JSON.parse(body);
+      assert.equal(parsed.ok, true);
+      assert.equal(parsed.method, 'GET');
+      assert.equal(parsed.path, '/test');
+      assert.equal(connectAttempts(), 0);
+    });
+  });
   // ── CONNECT tunnel ───────────────────────────────────────
 
   describe('CONNECT tunnel', () => {

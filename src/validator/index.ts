@@ -1,10 +1,11 @@
 import fs from 'node:fs';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import { atomicRewrite } from '../atomicRewrite.js';
 import { loadConfig } from '../config/index.js';
 import { createLogger } from '../logger.js';
 import { runValidation } from './runner.js';
-import type { ProgressCallback, ValidatorOptions } from './types.js';
+import type { ProgressCallback, Timeouts, ValidatorOptions, ValidatorOptionsOverrides } from './types.js';
 
 const logger = createLogger('validator');
 
@@ -24,38 +25,45 @@ interface ValidationConfigFragment {
   validationTlsPort?: number;
 }
 
-export function buildOptionsFromConfig(config: ValidationConfigFragment, overrides: Partial<ValidatorOptions> = {}): ValidatorOptions {
+export function buildOptionsFromConfig(config: ValidationConfigFragment, overrides: ValidatorOptionsOverrides = {}): ValidatorOptions {
   const validModes = ['quick', 'standard', 'strict', 'stream', 'tcp-only'] as const;
   type ValidMode = (typeof validModes)[number];
   const configMode = config.validationMode && validModes.includes(config.validationMode as ValidMode) ? (config.validationMode as ValidMode) : undefined;
   if (!configMode && config.validationMode) {
     logger.warn({ mode: config.validationMode }, 'invalid validationMode, falling back to quick');
   }
+  const clampInt = (v: unknown, min: number, max: number, def: number): number =>
+    typeof v === 'number' && Number.isInteger(v) && v >= min && v <= max ? v : def;
+  const nonEmpty = (v: unknown, def: string): string => (typeof v === 'string' && v.trim() ? v.trim() : def);
+  if (overrides.mode && !validModes.includes(overrides.mode as ValidMode)) {
+    logger.warn({ mode: overrides.mode }, 'invalid CLI validation mode, falling back to config/default');
+  }
+  const mode = overrides.mode && validModes.includes(overrides.mode as ValidMode) ? (overrides.mode as ValidMode) : (configMode ?? 'quick');
+  const connectSeconds = clampInt(overrides.connectTimeout ?? config.validationConnectTimeout, 1, 30, 4);
+  const tcpMs = clampInt(connectSeconds * 1000, 1000, 30000, 4000);
+  const maxLatency = clampInt(overrides.maxLatency ?? config.validationMaxLatency, 500, 30000, 7000);
+  const timeouts: Timeouts = {
+    tcpMs,
+    httpMs: clampInt(maxLatency + tcpMs, 1500, 60000, 11000),
+    tlsMs: clampInt(tcpMs, 1000, 30000, 4000),
+    streamMs: clampInt(mode === 'strict' ? 35000 : 25000, 1000, 60000, 25000),
+  };
   return {
-    threads: overrides.threads ?? config.validationThreads ?? 20,
-    mode:
-      overrides.mode && validModes.includes(overrides.mode as ValidMode)
-        ? (overrides.mode as ValidMode)
-        : (() => {
-            if (overrides.mode && !validModes.includes(overrides.mode as ValidMode)) {
-              logger.warn({ mode: overrides.mode }, 'invalid CLI validation mode, falling back to config/default');
-            }
-            return configMode ?? 'quick';
-          })(),
-    baseUrl: overrides.baseUrl ?? config.validationBaseUrl ?? 'http://httpbin.org',
-    connectTimeout: overrides.connectTimeout ?? config.validationConnectTimeout ?? 4,
-    maxLatency: overrides.maxLatency ?? config.validationMaxLatency ?? 7000,
-    ttfbRatio: overrides.ttfbRatio ?? config.validationTtfbRatio ?? 100,
-    maxGap: overrides.maxGap ?? config.validationMaxGap ?? 5000,
+    threads: clampInt(overrides.threads ?? config.validationThreads, 1, 200, 20),
+    mode,
+    baseUrl: nonEmpty(overrides.baseUrl ?? config.validationBaseUrl, 'http://httpbin.org'),
+    timeouts,
+    maxLatency,
+    ttfbRatio: clampInt(overrides.ttfbRatio ?? config.validationTtfbRatio, 1, 100, 100),
+    maxGap: clampInt(overrides.maxGap ?? config.validationMaxGap, 0, 60000, 5000),
     insecure: overrides.insecure ?? config.validationInsecure ?? false,
     strictTLS: overrides.strictTLS ?? config.validationStrictTLS ?? true,
     anonCheck: overrides.anonCheck ?? config.validationAnonCheck ?? true,
-    throttle: overrides.throttle ?? config.validationThrottle ?? 100,
-    tlsHost: overrides.tlsHost ?? config.validationTlsHost ?? 'www.google.com',
-    tlsPort: overrides.tlsPort ?? config.validationTlsPort ?? 443,
+    throttle: clampInt(overrides.throttle ?? config.validationThrottle, 0, 5000, 100),
+    tlsHost: nonEmpty(overrides.tlsHost ?? config.validationTlsHost, 'www.google.com'),
+    tlsPort: clampInt(overrides.tlsPort ?? config.validationTlsPort, 1, 65535, 443),
   };
 }
-
 export async function validateFile(filePath: string, opts: ValidatorOptions, onProgress?: ProgressCallback, abortSignal?: AbortSignal) {
   if (!fs.existsSync(filePath)) throw new Error(`File not found: ${filePath}`);
   const stat = fs.statSync(filePath);
@@ -85,7 +93,7 @@ export async function cliMain() {
   let jsonOutput = '';
   // Overrides start undefined so unset flags fall through to config.json / built-in defaults
   // (see buildOptionsFromConfig), instead of silently clobbering them with hardcoded values.
-  const overrides: Partial<ValidatorOptions> = {};
+  const overrides: ValidatorOptionsOverrides = {};
 
   const nextArg = (i: number, flag: string): string => {
     const v = args[i + 1];
@@ -123,8 +131,11 @@ Options:
   --json <path>         Write JSON results to file
   --output <path>       Write valid proxies to file (one per line)
   --insecure            Allow invalid TLS certificates
+  --no-insecure         Enforce valid TLS certificates
   --strict-tls          Reject self-signed / unauthorized certificates
+  --no-strict-tls       Skip the explicit TLS certificate check
   --anon-check          Verify proxy anonymity (X-Forwarded-For)
+  --no-anon-check       Skip the anonymity check
   --throttle <ms>       Minimum delay between checks
   --tls-host <host>     Target for explicit TLS check
   --tls-port <port>     Port for explicit TLS check (default 443)
@@ -202,12 +213,24 @@ Examples:
       overrides.insecure = true;
       continue;
     }
+    if (a === '--no-insecure') {
+      overrides.insecure = false;
+      continue;
+    }
     if (a === '--strict-tls' || a === '-s') {
       overrides.strictTLS = true;
       continue;
     }
+    if (a === '--no-strict-tls') {
+      overrides.strictTLS = false;
+      continue;
+    }
     if (a === '--anon-check' || a === '-a') {
       overrides.anonCheck = true;
+      continue;
+    }
+    if (a === '--no-anon-check') {
+      overrides.anonCheck = false;
       continue;
     }
     if (a === '--throttle' || a === '-T') {
@@ -240,7 +263,7 @@ Examples:
   console.log(`\nTotal: ${result.valid.length} valid, ${result.invalid.length} invalid of ${result.total}`);
 
   if (output && result.valid.length) {
-    fs.writeFileSync(output, `${result.valid.join('\n')}\n`);
+    await atomicRewrite(output, () => `${result.valid.join('\n')}\n`);
     console.log(`Saved to ${output}`);
   }
 

@@ -1,9 +1,17 @@
 import type { RotatorConfig } from '../config/index.js';
+
+export interface Timeouts {
+  tcpMs: number;
+  httpMs: number;
+  tlsMs: number;
+  streamMs: number;
+}
+
 export interface ValidatorOptions {
   threads: number;
   mode: RotatorConfig['validationMode'];
   baseUrl: string;
-  connectTimeout: number;
+  timeouts: Timeouts;
   maxLatency: number;
   ttfbRatio: number;
   maxGap: number;
@@ -14,6 +22,9 @@ export interface ValidatorOptions {
   tlsHost: string;
   tlsPort: number;
 }
+
+// The old CLI/dashboard connectTimeout input remains seconds at this boundary.
+export type ValidatorOptionsOverrides = Partial<Omit<ValidatorOptions, 'timeouts'>> & { connectTimeout?: number };
 
 export interface ProxyResult {
   proxy: string;

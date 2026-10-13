@@ -1,8 +1,10 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { createLogger } from '../logger.js';
 import { isBlockedTarget } from '../proxy/ssrf.js';
 
+const logger = createLogger('config');
 // Config resolution path: WINNOW_CONFIG env > --config cli flag (set in index.ts) > default.
 // Default respects WINNOW_DATA_DIR / DATA_DIR / cwd.
 export function resolveDataDir(): string {
@@ -54,6 +56,7 @@ export interface RotatorConfig {
   sessionAffinityMs: number;
   // Pre-connect jitter — random delay before upstream dial (0 = disabled)
   preConnectJitterMs: number;
+  maxConnections: number;
 }
 
 const DEFAULTS: RotatorConfig = {
@@ -81,17 +84,17 @@ const DEFAULTS: RotatorConfig = {
   maxFatalErrors: 3,
   fatalBanMs: 5 * 60 * 1000, // 5 min immediate ban after a fatal error
   banBaseMs: 30 * 1000, // 30s base ban for transient errors
-  banMultiplier: 2, // exponential: ban = base * (multiplier ^ min(errors-1, k))
-  banMaxMs: 3 * 60 * 1000, // 3 min cap on transient bans
-  pruneAfterMs: 24 * 60 * 60 * 1000, // 24h — frozen proxy auto-pruned after this
-  upstreamIdleTimeout: 0, // 0 = use timeout * 2 for idle timeout
+  banMultiplier: 2,
+  banMaxMs: 3 * 60 * 1000,
+  pruneAfterMs: 24 * 60 * 60 * 1000,
+  upstreamIdleTimeout: 0,
   healthCheckInterval: 15000,
   healthCheckCount: 10,
   healthCheckParallel: true,
   sessionAffinityMs: 300000, // 5 min — stick to same proxy per target
   preConnectJitterMs: 0, // disabled by default (opt-in, adds latency)
+  maxConnections: 1000,
 };
-
 const API_ALLOWED_KEYS = new Set<keyof RotatorConfig>([
   // 'port',         // REMOVED — not hot-reloadable
   // 'proxyFile',    // REMOVED — not hot-reloadable
@@ -125,8 +128,8 @@ const API_ALLOWED_KEYS = new Set<keyof RotatorConfig>([
   'healthCheckParallel',
   'sessionAffinityMs',
   'preConnectJitterMs',
+  'maxConnections',
 ]);
-
 function clampInt(value: unknown, min: number, max: number, def: number): number {
   if (typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max) return value;
   return def;
@@ -179,7 +182,7 @@ function sanitize(cfg: Record<string, unknown>): RotatorConfig {
   c.banMultiplier = clampNum(c.banMultiplier, 1, 10, DEFAULTS.banMultiplier);
   c.banMaxMs = clampNum(c.banMaxMs, Math.max(1000, c.banBaseMs), 24 * 60 * 60 * 1000, DEFAULTS.banMaxMs);
   if (c.banMaxMs < c.banBaseMs) {
-    console.warn(`[CONFIG] banMaxMs (${c.banMaxMs}) < banBaseMs (${c.banBaseMs}), adjusting banMaxMs to banBaseMs`);
+    logger.warn({ banMaxMs: c.banMaxMs, banBaseMs: c.banBaseMs }, 'banMaxMs < banBaseMs, adjusting banMaxMs to banBaseMs');
     c.banMaxMs = c.banBaseMs;
   }
   c.pruneAfterMs = clampNum(c.pruneAfterMs, 60 * 1000, 30 * 24 * 60 * 60 * 1000, DEFAULTS.pruneAfterMs);
@@ -223,7 +226,7 @@ function sanitize(cfg: Record<string, unknown>): RotatorConfig {
           }
           const strippedHost = host.replace(/^\[(.+)\]$/, '$1');
           if (isBlockedTarget(strippedHost)) {
-            console.warn(`[CONFIG] target ${t} is blocked, removing`);
+            logger.warn({ target: t }, 'target blocked by SSRF, removing');
             return null;
           }
           return `${host}:${port ?? 443}`;
@@ -240,6 +243,7 @@ function sanitize(cfg: Record<string, unknown>): RotatorConfig {
   c.healthCheckParallel = c.healthCheckParallel !== false;
   c.sessionAffinityMs = clampInt(c.sessionAffinityMs, 0, 86400000, DEFAULTS.sessionAffinityMs); // 0–24h
   c.preConnectJitterMs = clampInt(c.preConnectJitterMs, 0, 10000, DEFAULTS.preConnectJitterMs); // 0–10s
+  c.maxConnections = clampInt(c.maxConnections, 1, 100000, DEFAULTS.maxConnections);
   c.proxyFile = ensureString(c.proxyFile, DEFAULTS.proxyFile, (s) => !s.includes('\0'));
   if (!path.isAbsolute(c.proxyFile)) c.proxyFile = path.resolve(resolveDataDir(), c.proxyFile);
   return c;
@@ -271,9 +275,9 @@ export function loadConfig(): RotatorConfig {
     }
   } catch (e: unknown) {
     if (e instanceof SyntaxError) {
-      console.error('[CONFIG] Parse error in config file:', (e as Error).message);
+      logger.error({ err: (e as Error).message }, 'Parse error in config file');
     } else {
-      console.warn('[CONFIG] Error reading config:', (e as Error).message);
+      logger.warn({ err: (e as Error).message }, 'Error reading config');
     }
   }
   {
@@ -289,7 +293,7 @@ export function loadConfig(): RotatorConfig {
     if (Number.isFinite(port) && port >= 1 && port <= 65535) {
       cfg.port = port;
     } else {
-      console.warn(`Invalid PORT env value "${process.env.PORT}", using default`);
+      logger.warn({ port: process.env.PORT }, 'Invalid PORT env value, using default');
     }
   }
   if (process.env.WINNOW_PORT?.trim()) {
@@ -297,7 +301,7 @@ export function loadConfig(): RotatorConfig {
     if (Number.isFinite(port) && port >= 1 && port <= 65535) {
       cfg.port = port;
     } else {
-      console.warn(`Invalid WINNOW_PORT env value "${process.env.WINNOW_PORT}", using default`);
+      logger.warn({ port: process.env.WINNOW_PORT }, 'Invalid WINNOW_PORT env value, using default');
     }
   }
   return sanitize(cfg);
@@ -313,7 +317,7 @@ export function updateConfig(patch: Partial<RotatorConfig>, currentRuntime?: Par
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) current = { ...(parsed as Record<string, unknown>) };
     }
   } catch {
-    console.warn('[CONFIG] config file corrupted, keeping in-memory config');
+    logger.warn({}, 'config file corrupted, keeping in-memory config');
   }
   // Apply runtime values (CLI overrides) as base before patch
   if (currentRuntime) {
@@ -335,7 +339,7 @@ export function updateConfig(patch: Partial<RotatorConfig>, currentRuntime?: Par
     fs.writeFileSync(tmpFile, `${JSON.stringify(sanitized, null, 2)}\n`, 'utf8');
     fs.renameSync(tmpFile, configPath);
   } catch (e) {
-    console.warn('[CONFIG] failed to write config:', e instanceof Error ? e.message : String(e));
+    logger.warn({ err: e instanceof Error ? e.message : String(e) }, 'failed to write config');
     return sanitize(currentRuntime || current);
   }
   return sanitized;

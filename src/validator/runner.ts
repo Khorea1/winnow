@@ -1,4 +1,5 @@
 import { createLogger } from '../logger.js';
+import { redactProxy } from '../proxy/redact.js';
 import { httpCheck } from './checks/http.js';
 import { streamingCheck } from './checks/streaming.js';
 import { parseProxyForTcp, tcpCheck } from './checks/tcp.js';
@@ -9,7 +10,7 @@ const logger = createLogger('validator-runner');
 
 /** Build a failure result consistently across all validation stages. */
 function fail(proxy: string, stage: string, error: string, extra?: Partial<ProxyResult>): ProxyResult {
-  return { proxy, valid: false, error, stage, ...extra };
+  return { proxy, valid: false, stage, ...extra, error: redactProxy(extra?.error ?? error) };
 }
 // Helper: race a promise against an abort signal
 function withAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -44,7 +45,7 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
   }
 
   try {
-    await withAbort(tcpCheck(tcpInfo.host, tcpInfo.port, opts.connectTimeout * 1000), abortSignal);
+    await withAbort(tcpCheck(tcpInfo.host, tcpInfo.port, opts.timeouts.tcpMs, abortSignal), abortSignal);
   } catch {
     if (abortSignal?.aborted) return fail(trimmed, 'cancelled', 'aborted');
     return fail(trimmed, 'tcp', 'TCP unreachable', { httpCode: 0 });
@@ -58,11 +59,13 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
       const target = `${opts.baseUrl.replace(/\/$/, '')}/ip`;
       const res = await withAbort(
         httpCheck(trimmed, target, {
-          connectTimeout: opts.connectTimeout,
+          connectTimeoutMs: opts.timeouts.tcpMs,
+          timeoutMs: opts.timeouts.httpMs,
           maxLatency: opts.maxLatency,
           insecure: opts.insecure,
           strictTLS: opts.strictTLS,
           anonCheck: opts.anonCheck,
+          abortSignal,
         }),
         abortSignal,
       );
@@ -80,6 +83,17 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
       const isHttpbin = opts.baseUrl.includes('httpbin.org');
       if (isHttpbin && !res.body.includes('origin')) {
         return fail(trimmed, 'http', 'invalid content', { httpCode: res.status, latency: res.latency });
+      }
+      // Anonymity check: httpbin echoes the egress chain in `"origin"`. A
+      // comma-separated value means the proxy forwarded the client IP
+      // (X-Forwarded-For chain) — the proxy is transparent, not anonymous.
+      // Response-header scanning alone (httpCheck) almost never fires because
+      // the leak is in the body, not the headers.
+      if (opts.anonCheck && isHttpbin) {
+        const originMatch = res.body.match(/"origin"\s*:\s*"([^"]*)"/);
+        if (originMatch?.[1]?.includes(',')) {
+          return fail(trimmed, 'http', 'transparent proxy', { httpCode: res.status, latency: res.latency });
+        }
       }
     } catch (e: unknown) {
       if (abortSignal?.aborted) return fail(trimmed, 'cancelled', 'aborted');
@@ -104,9 +118,10 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
       const tlsPort = opts.tlsPort || 443;
       const tlsRes = await withAbort(
         tlsCheck(trimmed, tlsHost, tlsPort, {
-          connectTimeout: opts.connectTimeout,
+          connectTimeoutMs: opts.timeouts.tlsMs,
           insecure: opts.insecure,
           strictTLS: true,
+          abortSignal,
         }),
         abortSignal,
       );
@@ -132,12 +147,13 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
       const streamUrl = `${opts.baseUrl.replace(/\/$/, '')}/stream/5?delay=0.2`;
       const res = await withAbort(
         streamingCheck(trimmed, streamUrl, {
-          connectTimeout: opts.connectTimeout,
-          maxTime: 25,
+          connectTimeoutMs: opts.timeouts.tcpMs,
+          maxTime: opts.timeouts.streamMs,
           ttfbRatio: opts.ttfbRatio,
           maxGap: opts.maxGap,
           insecure: opts.insecure,
           strictTLS: opts.strictTLS,
+          abortSignal,
         }),
         abortSignal,
       );
@@ -159,12 +175,13 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
       const stream20Url = `${opts.baseUrl.replace(/\/$/, '')}/stream/20?delay=0.1`;
       const res = await withAbort(
         streamingCheck(trimmed, stream20Url, {
-          connectTimeout: opts.connectTimeout,
-          maxTime: 35,
+          connectTimeoutMs: opts.timeouts.tcpMs,
+          maxTime: opts.timeouts.streamMs,
           ttfbRatio: opts.ttfbRatio,
           maxGap: opts.maxGap,
           insecure: opts.insecure,
           strictTLS: opts.strictTLS,
+          abortSignal,
         }),
         abortSignal,
       );
@@ -208,16 +225,16 @@ export async function runValidation(
         // Per-worker throttle — with N concurrent workers, effective rate is N / throttle
         if (opts.throttle > 0) {
           await new Promise<void>((r) => {
-            const tid = setTimeout(r, opts.throttle);
+            const tid = setTimeout(() => {
+              if (abortSignal) abortSignal.removeEventListener('abort', onAbort);
+              r();
+            }, opts.throttle);
+            const onAbort = () => {
+              clearTimeout(tid);
+              r();
+            };
             if (abortSignal) {
-              abortSignal.addEventListener(
-                'abort',
-                () => {
-                  clearTimeout(tid);
-                  r();
-                },
-                { once: true },
-              );
+              abortSignal.addEventListener('abort', onAbort, { once: true });
             }
           });
         }
@@ -225,16 +242,15 @@ export async function runValidation(
 
         try {
           const res = await validateSingleProxy(proxy, opts, abortSignal);
-          const sanitizedProxy = res.proxy.replace(/\/\/([^:/]+):([^@]+)@/, '//***:***@');
-          const displayResult = { ...res, proxy: sanitizedProxy };
-          results.push(displayResult);
+          results.push(res);
+          const displayProxy = redactProxy(res.proxy);
           if (res.valid) valid.push(res.proxy);
           else invalid.push({ proxy: res.proxy, reason: res.error || 'error' });
           done++;
-          onProgress?.(displayResult, { total, done, valid: valid.length, invalid: invalid.length });
+          onProgress?.(res, { total, done, valid: valid.length, invalid: invalid.length });
           logger.debug(
             {
-              proxy: sanitizedProxy,
+              proxy: displayProxy,
               valid: res.valid,
               stage: res.stage,
               error: res.error,
@@ -246,21 +262,21 @@ export async function runValidation(
             'validation result',
           );
         } catch (e: unknown) {
-          const errMsg = e instanceof Error ? e.message : String(e);
-          const sanitizedProxy = proxy.replace(/\/\/[^@]*@/, '//***:***@');
-          const r: ProxyResult = { proxy: sanitizedProxy, valid: false, error: errMsg, stage: 'unknown' };
+          const errMsg = redactProxy(e instanceof Error ? e.message : String(e));
+          const displayProxy = redactProxy(proxy);
+          const r: ProxyResult = { proxy, valid: false, error: errMsg, stage: 'unknown' };
           results.push(r);
           invalid.push({ proxy, reason: r.error! });
           done++;
           onProgress?.(r, { total, done, valid: valid.length, invalid: invalid.length });
           logger.debug(
-            { proxy: sanitizedProxy, valid: false, stage: r.stage, error: r.error, done, total, validCount: valid.length, invalidCount: invalid.length },
+            { proxy: displayProxy, valid: false, stage: r.stage, error: r.error, done, total, validCount: valid.length, invalidCount: invalid.length },
             'validation error',
           );
         }
       }
     } catch (e) {
-      logger.error({ error: e instanceof Error ? e.message : String(e) }, 'validation worker error');
+      logger.error({ error: redactProxy(e instanceof Error ? e.message : String(e)) }, 'validation worker error');
     }
   }
 

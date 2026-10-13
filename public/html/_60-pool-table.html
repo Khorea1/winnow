@@ -3,12 +3,12 @@
         <header class="card-head">
           <h2><span data-i18n="poolTitle">Pool de proxies</span> <span class="count" id="pool-count"></span></h2>
           <div class="tools">
-            <div class="filter-chips" id="filter-chips" role="group" data-i18n-aria="filterAriaGroup" aria-label="Filtrar por estado">
+            <fieldset class="filter-chips" id="filter-chips" data-i18n-aria="filterAriaGroup" aria-label="Filtrar por estado">
               <button class="filter-chip ok" data-status="ok" type="button"><span data-i18n="filterChipOk">ok</span> <span class="count" data-status="ok"></span></button>
               <button class="filter-chip warn" data-status="warn" type="button"><span data-i18n="filterChipWarn">lento</span> <span class="count" data-status="warn"></span></button>
               <button class="filter-chip err" data-status="err" type="button"><span data-i18n="filterChipErr">erro</span> <span class="count" data-status="err"></span></button>
               <button class="filter-chip ban" data-status="ban" type="button"><span data-i18n="filterChipBan">banido</span> <span class="count" data-status="ban"></span></button>
-            </div>
+            </fieldset>
             <div class="search-wrap"><input id="proxy-filter" type="text" data-i18n-placeholder="filterPlaceholder" placeholder="filtrar (Ctrl+K)" spellcheck="false" data-i18n-aria="filterAriaInput" aria-label="Filtrar proxies"></div>
             <button class="icon-btn" id="btn-copy-all" type="button" data-i18n-title="copyAllTitle" title="Copiar proxies filtrados" aria-label="Copiar proxies filtrados">⧉</button>
           </div>
@@ -33,7 +33,7 @@
           <div class="table-note" id="table-note"></div>
         </div>
         <div class="trend-wrap">
-          <svg id="trend-svg" viewBox="0 0 600 64" preserveAspectRatio="none"></svg>
+          <svg id="trend-svg" viewBox="0 0 600 64" preserveAspectRatio="none" role="img" aria-label="Tendência de latência e erros"></svg>
           <div class="trend-labels"><span data-i18n="trendLatency">latência média (ms)</span><span data-i18n="trendErrors">erros acumulados</span></div>
         </div>
       </article>

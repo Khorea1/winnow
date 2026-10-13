@@ -15,12 +15,13 @@ export async function streamingCheck(
   proxyRaw: string,
   targetUrl: string,
   opts: {
-    connectTimeout: number;
+    connectTimeoutMs: number;
     maxTime: number;
     ttfbRatio: number;
     maxGap: number;
     insecure: boolean;
     strictTLS: boolean;
+    abortSignal?: AbortSignal;
   },
 ): Promise<StreamResult> {
   const parsedProxy = parseLine(proxyRaw);
@@ -35,7 +36,7 @@ export async function streamingCheck(
   const tPort = parseInt(u.port, 10) || (u.protocol === 'https:' ? 443 : 80);
   const pathAndQuery = u.pathname + u.search || '/';
 
-  const { sock: rawSock } = await dial(parsedProxy, tHost, tPort, opts.connectTimeout * 1000);
+  const { sock: rawSock } = await dial(parsedProxy, tHost, tPort, opts.connectTimeoutMs);
   let sock: net.Socket | tls.TLSSocket = rawSock as net.Socket;
   if (u.protocol === 'https:') {
     sock = tls.connect({ socket: rawSock as net.Socket, servername: tHost, rejectUnauthorized: opts.strictTLS ? true : !opts.insecure });
@@ -47,7 +48,7 @@ export async function streamingCheck(
           sock.destroy();
           reject(new Error('TLS handshake timeout'));
         }
-      }, opts.connectTimeout * 1000);
+      }, opts.connectTimeoutMs);
       sock.once('secureConnect', () => {
         if (!tlsDone) {
           tlsDone = true;
@@ -67,6 +68,16 @@ export async function streamingCheck(
 
   return new Promise((resolve, reject) => {
     let done = false;
+    // Abort destroys the stream socket so cancelled runs settle promptly.
+    const onAbort = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try {
+        sock.destroy();
+      } catch {}
+      reject(new Error('aborted'));
+    };
     const start = Date.now();
     let firstByte = 0;
     let lastChunkTime = 0;
@@ -79,12 +90,19 @@ export async function streamingCheck(
     const timer = setTimeout(() => {
       if (!done) {
         done = true;
+        unwatchAbort();
         try {
           sock.destroy();
         } catch {}
         reject(new Error('stream timeout'));
       }
-    }, opts.maxTime * 1000);
+    }, opts.maxTime);
+    const unwatchAbort = () => opts.abortSignal?.removeEventListener('abort', onAbort);
+    if (opts.abortSignal?.aborted) {
+      onAbort();
+      return;
+    }
+    opts.abortSignal?.addEventListener('abort', onAbort, { once: true });
 
     sock.on('data', (d: Buffer) => {
       if (done) return;
@@ -95,6 +113,7 @@ export async function streamingCheck(
         if (headerBuf.length > 65536) {
           done = true;
           clearTimeout(timer);
+          unwatchAbort();
           reject(new Error('response headers too large'));
           return;
         }
@@ -135,6 +154,7 @@ export async function streamingCheck(
       if (done) return;
       done = true;
       clearTimeout(timer);
+      unwatchAbort();
       // If headers never completed, the connection closed before we got a full response
       if (headersEnd === -1) {
         reject(new Error('no HTTP response headers received'));
@@ -181,6 +201,7 @@ export async function streamingCheck(
       if (!done) {
         done = true;
         clearTimeout(timer);
+        unwatchAbort();
         try {
           sock.destroy();
         } catch {}
@@ -195,6 +216,7 @@ export async function streamingCheck(
       if (!done) {
         done = true;
         clearTimeout(timer);
+        unwatchAbort();
         try {
           sock.destroy();
         } catch {}

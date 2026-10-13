@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { parseHostPort, parseLine } from '../proxy/dial.js';
+import { parseHostPort, parseLine, unwrapProxyHost } from '../proxy/dial.js';
 import { isBlockedTarget } from '../proxy/ssrf.js';
 
 describe('parseHostPort', () => {
@@ -42,6 +42,14 @@ describe('parseHostPort', () => {
 
   it('returns null for empty input', () => {
     assert.equal(parseHostPort(''), null);
+  });
+
+  it('unwrapProxyHost strips URL brackets so net.connect does not hang', () => {
+    // WHATWG URL keeps brackets: new URL('http://[::1]:8080').hostname === '[::1]'
+    assert.equal(unwrapProxyHost(new URL('http://[::1]:8080').hostname), '::1');
+    assert.equal(unwrapProxyHost('::1'), '::1');
+    assert.equal(unwrapProxyHost('example.com'), 'example.com');
+    assert.equal(unwrapProxyHost('1.2.3.4'), '1.2.3.4');
   });
 
   it('returns null for whitespace-only input', () => {

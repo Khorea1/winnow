@@ -4,12 +4,14 @@ import type http from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
+import { atomicRewrite } from '../atomicRewrite.js';
 import { type RotatorConfig, resolveDataDir, updateConfig } from '../config/index.js';
 import { createValidationRun, finishValidationRun } from '../db/index.js';
 import { EventLog, type ProxyEvent } from '../events.js';
 import { type HealthEntry, HealthStore } from '../health/index.js';
 import { createLogger } from '../logger.js';
 import { parseLine } from '../proxy/dial.js';
+import { redactProxy } from '../proxy/redact.js';
 import { isBlockedAfterDns, isBlockedTarget } from '../proxy/ssrf.js';
 import { buildOptionsFromConfig } from '../validator/index.js';
 import { runValidation } from '../validator/runner.js';
@@ -20,15 +22,25 @@ const logger = createLogger('dashboard');
 const _DASHBOARD_PATH = path.join(import.meta.dirname, '../../public/dashboard.html');
 const _DASHBOARD_CSS_PATH = path.join(import.meta.dirname, '../../public/dashboard.css');
 const _DASHBOARD_JS_PATH = path.join(import.meta.dirname, '../../public/dashboard.js');
+const _DASHBOARD_UTILS_PATH = path.join(import.meta.dirname, '../../public/dashboard-utils.js');
 let _unsubEventLog: (() => void) | undefined;
 let _healthHandler: ((data: unknown) => void) | undefined;
 let _unsubHealth: (() => void) | undefined;
+let _abortValidation: (() => void) | undefined;
+let _clearRateSweep: (() => void) | undefined;
+let _clearPoolInterval: (() => void) | undefined;
 let _dashboardHtml: string | null = null;
 export function unsubscribeDashboard() {
+  _abortValidation?.();
+  _abortValidation = undefined;
   _unsubEventLog?.();
   _unsubEventLog = undefined;
   _unsubHealth?.();
   _unsubHealth = undefined;
+  _clearRateSweep?.();
+  _clearRateSweep = undefined;
+  _clearPoolInterval?.();
+  _clearPoolInterval = undefined;
 }
 const MAX_BODY_SIZE = 32 * 1024;
 interface ValidationOverrides {
@@ -48,6 +60,15 @@ interface ValidationOverrides {
   prune?: boolean;
 }
 const MAX_SSE_CLIENTS = 100;
+// Rate limiting for mutation endpoints — simple per-IP sliding window (F8 fix).
+// In-memory, scoped inside registerDashboard closure. No persistence needed.
+const RATE_LIMIT_WINDOW_MS = 60_000; // 1-minute window
+const RATE_LIMIT_MAX_REQUESTS = 10; // max mutation requests per IP per window
+
+interface RateBucket {
+  count: number;
+  resetAt: number;
+}
 
 function getAuthToken() {
   return process.env.WINNOW_TOKEN || process.env.DASHBOARD_TOKEN || process.env.API_TOKEN || null;
@@ -56,57 +77,30 @@ function isAuthorized(req: IncomingMessage): boolean {
   const token = getAuthToken();
   if (!token) return true; // No auth configured — allow all
   const auth = req.headers.authorization;
-  if (!auth) return false;
+  if (!auth || typeof auth !== 'string') return false;
   try {
     // Support both "Bearer <token>" and raw token
-    if (typeof auth === 'string') {
-      // Compare lengths to avoid timingSafeEqual throw
-      const bearerPrefix = 'Bearer ';
-      const authValue = auth.startsWith(bearerPrefix) ? auth.slice(bearerPrefix.length) : auth;
-      const tokenBuf = Buffer.from(token);
-      const authBuf = Buffer.from(authValue);
-      // Pad to same length to avoid timingSafeEqual throw on length mismatch
-      const maxLen = Math.max(tokenBuf.length, authBuf.length);
-      if (maxLen === 0) return false;
-      return crypto.timingSafeEqual(
-        Buffer.concat([tokenBuf, Buffer.alloc(maxLen - tokenBuf.length)]),
-        Buffer.concat([authBuf, Buffer.alloc(maxLen - authBuf.length)]),
-      );
-    }
+    const bearerPrefix = 'Bearer ';
+    const authValue = auth.startsWith(bearerPrefix) ? auth.slice(bearerPrefix.length) : auth;
+    if (!authValue) return false;
+    // Compare SHA-256 digests: fixed length hides the token length and needs
+    // no zero-padding (padding leaks length and admits prefix collisions).
+    const provided = crypto.createHash('sha256').update(authValue).digest();
+    const expected = crypto.createHash('sha256').update(token).digest();
+    return crypto.timingSafeEqual(provided, expected);
   } catch {
     return false;
   }
-  return false;
 }
 function isSafeProxyFile(p: string, allowedDir: string): boolean {
-  try {
-    const resolved = fs.realpathSync(p);
-    if (resolved.startsWith(allowedDir + path.sep) || resolved === allowedDir) return true;
-    if (path.isAbsolute(p)) {
-      const normalized = path.normalize(p);
-      if (normalized.includes('..')) return false;
-      return fs.existsSync(normalized);
-    }
-    return false;
-  } catch {
-    return false;
-  }
-}
-function sanitizeProxyKey(key: string): string {
-  try {
-    const u = new URL(key);
-    u.username = '';
-    u.password = '';
-    // URL class adds trailing slash, remove it; also strip protocol prefix for consistent comparison
-    return u
-      .toString()
-      .replace(/\/$/, '')
-      .replace(/^[a-z]+:\/\//, '');
-  } catch {
-    // URL parsing failed — likely protocol-less string with credentials
-    // Strip user:password@ prefix if present
-    return key.replace(/^[^@]*@/, '');
-  }
+  // Pure path containment — no fs calls. The proxy file must live inside the
+  // data dir; dashboard file ops (prune/append/delete/validate) fail closed
+  // otherwise. An operator-configured PROXY_FILE outside the data dir keeps
+  // serving traffic but cannot be rewritten via the dashboard API.
+  if (typeof p !== 'string' || !p || p.includes('\0')) return false;
+  const base = path.resolve(allowedDir);
+  const resolved = path.resolve(p);
+  return resolved === base || resolved.startsWith(base + path.sep);
 }
 
 function respondJson(res: ServerResponse, data: unknown, status = 200) {
@@ -122,6 +116,16 @@ function respondJson(res: ServerResponse, data: unknown, status = 200) {
 
 function sanitizeError(_e: unknown): string {
   return 'Internal server error';
+}
+
+// Redact any credentials from text fields before an object crosses the HTTP/SSE boundary.
+function maskEventProxy<T>(event: T): T {
+  if (!event || typeof event !== 'object') return event;
+  const safe: Record<string, unknown> = { ...(event as Record<string, unknown>) };
+  for (const [key, value] of Object.entries(safe)) {
+    if (typeof value === 'string') safe[key] = redactProxy(value);
+  }
+  return safe as T;
 }
 
 /** Read request body with size limit. Returns null and sends 413 if too large. */
@@ -170,26 +174,29 @@ function readBody(req: IncomingMessage, res: ServerResponse): Promise<string | n
 
 function serveDashboard(res: ServerResponse) {
   try {
-    if (!_dashboardHtml) {
+    const shouldCache = process.env.NODE_ENV === 'production';
+    let html = shouldCache ? _dashboardHtml : null;
+    if (!html) {
       const candidates = [_DASHBOARD_PATH, path.join(process.cwd(), 'public/dashboard.html')];
-      for (const c of candidates) {
-        if (fs.existsSync(c)) {
-          _dashboardHtml = fs.readFileSync(c, 'utf8');
+      for (const candidate of candidates) {
+        if (fs.existsSync(candidate)) {
+          html = fs.readFileSync(candidate, 'utf8');
           break;
         }
       }
-      if (!_dashboardHtml) {
-        // fallback minimal
-        _dashboardHtml = '<html><body><h1>Dashboard not found</h1></body></html>';
+      if (!html) {
+        html = '<html><body><h1>Dashboard not found</h1></body></html>';
       }
+      if (shouldCache) _dashboardHtml = html;
     }
     res.writeHead(200, {
       'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-cache',
       'X-Content-Type-Options': 'nosniff',
       'Content-Security-Policy':
-        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; base-uri 'self'",
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; base-uri 'self'; frame-ancestors 'self'",
     });
-    res.end(_dashboardHtml);
+    res.end(html);
   } catch (e: unknown) {
     res.writeHead(500);
     res.end(`Dashboard error: ${e instanceof Error ? e.message : String(e)}`);
@@ -225,15 +232,41 @@ export function registerDashboard(
     db: Database.Database;
     eventLog?: EventLog;
     onConfigChange?: (updated: RotatorConfig) => void;
+    getRequestMetrics?: () => { requests: number; successes: number; failures: number; bytes: number; latencyMs: number };
   },
 ) {
-  const { config: cfgRef, health, db, eventLog, onConfigChange } = ctx;
+  const { config: cfgRef, health, db, eventLog, onConfigChange, getRequestMetrics } = ctx;
+  // Per-IP rate limit buckets for mutation endpoints (F8 fix)
+  const rateBuckets = new Map<string, RateBucket>();
+  // Periodic sweep of stale rate limit buckets — prevents unbounded growth
+  const rateSweep = setInterval(() => {
+    const now = Date.now();
+    for (const [ip, bucket] of rateBuckets) {
+      if (now >= bucket.resetAt) rateBuckets.delete(ip);
+    }
+  }, RATE_LIMIT_WINDOW_MS).unref();
+  _clearRateSweep = () => clearInterval(rateSweep);
+
+  function checkRateLimit(ip: string): boolean {
+    const now = Date.now();
+    const bucket = rateBuckets.get(ip);
+    if (!bucket || now >= bucket.resetAt) {
+      rateBuckets.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+      return true;
+    }
+    if (bucket.count >= RATE_LIMIT_MAX_REQUESTS) return false;
+    bucket.count++;
+    return true;
+  }
   const sseClients = new Set<ServerResponse>();
   let _validationRunning = false;
   let _abortController: AbortController | null = null;
+  _abortValidation = () => {
+    if (_abortController) _abortController.abort();
+  };
 
   _healthHandler = (data: unknown) => {
-    broadcast(sseClients, 'health:update', data);
+    broadcast(sseClients, 'health:update', maskEventProxy(data));
   };
   health.on('health:update', _healthHandler);
   _unsubHealth = () => {
@@ -241,7 +274,7 @@ export function registerDashboard(
   };
 
   // LOG: subscribe to event log for live SSE broadcasting
-  const eventSubscriber = (e: ProxyEvent) => broadcast(sseClients, 'proxy:event', e);
+  const eventSubscriber = (e: ProxyEvent) => broadcast(sseClients, 'proxy:event', maskEventProxy(e));
   _unsubEventLog = eventLog?.subscribe(eventSubscriber);
 
   // LOG: periodic pool status events
@@ -263,6 +296,7 @@ export function registerDashboard(
     } catch {}
   }, 30000);
   poolInterval.unref();
+  _clearPoolInterval = () => clearInterval(poolInterval);
 
   const origListeners = server.listeners('request');
 
@@ -270,11 +304,29 @@ export function registerDashboard(
     try {
       const urlObj = new URL(req.url || '/', 'http://localhost');
       const pathname = urlObj.pathname;
-      const needsAuth = pathname.startsWith('/api/') || pathname === '/dashboard' || pathname === '/events' || pathname === '/__stats';
+      const needsAuth =
+        pathname.startsWith('/api/') ||
+        pathname === '/dashboard' ||
+        pathname === '/dashboard.js' ||
+        pathname === '/dashboard.css' ||
+        pathname === '/dashboard-utils.js' ||
+        pathname === '/events' ||
+        pathname === '/__stats';
 
       if (needsAuth && !isAuthorized(req)) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
+      // Rate limit mutation endpoints — per-IP sliding window (F8 fix)
+      const isMutation =
+        (pathname === '/api/config' && req.method === 'POST') ||
+        (pathname === '/api/proxy' && req.method === 'DELETE') ||
+        (pathname === '/api/validate' && req.method === 'POST') ||
+        (pathname === '/api/validate/stop' && req.method === 'POST');
+      if (isMutation && !checkRateLimit(req.socket.remoteAddress || 'unknown')) {
+        res.writeHead(429, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Rate limit exceeded' }));
         return;
       }
 
@@ -291,7 +343,7 @@ export function registerDashboard(
 
       if (pathname === '/api/events' && req.method === 'GET') {
         const limit = Math.min(parseInt(urlObj.searchParams.get('limit') || '50', 10), 2000);
-        respondJson(res, { events: eventLog?.recent(limit) || [] });
+        respondJson(res, { events: (eventLog?.recent(limit) || []).map(maskEventProxy) });
         return;
       }
       if (pathname === '/api/config' && req.method === 'POST') {
@@ -335,26 +387,22 @@ export function registerDashboard(
         try {
           let removedFromFile = false;
           if (fs.existsSync(proxyFile)) {
-            const lines = fs.readFileSync(proxyFile, 'utf8').split('\n');
-            const kept = lines.filter((line) => {
-              const parsed = parseLine(line);
-              if (!parsed) return true; // keep comments/blank/unparsable lines untouched
-              if (sanitizeProxyKey(parsed.raw) === sanitizeProxyKey(key)) {
-                removedFromFile = true;
-                return false;
-              }
-              return true;
+            await atomicRewrite(proxyFile, (content) => {
+              const kept = content.split('\n').filter((line) => {
+                const parsed = parseLine(line);
+                if (!parsed) return true;
+                if (redactProxy(parsed.raw) === redactProxy(key)) {
+                  removedFromFile = true;
+                  return false;
+                }
+                return true;
+              });
+              return removedFromFile ? kept.join('\n') : null;
             });
-            if (removedFromFile) {
-              const dir = path.dirname(path.resolve(proxyFile));
-              const tmpFile = path.join(dir, `.${path.basename(proxyFile)}.tmp-${crypto.randomBytes(8).toString('hex')}`);
-              fs.writeFileSync(tmpFile, kept.join('\n'), 'utf8');
-              fs.renameSync(tmpFile, proxyFile);
-            }
           }
           let removedFromHealth = false;
           for (const [raw] of health.entries()) {
-            if (sanitizeProxyKey(raw) === sanitizeProxyKey(key)) {
+            if (redactProxy(raw) === redactProxy(key)) {
               health.delete(raw);
               removedFromHealth = true;
             }
@@ -364,7 +412,7 @@ export function registerDashboard(
             res.end(JSON.stringify({ error: 'Proxy not found' }));
             return;
           }
-          const safeKey = sanitizeProxyKey(key);
+          const safeKey = redactProxy(key);
           EventLog.safePush(eventLog, { type: 'pool', proxy: safeKey, target: '', status: 'info', detail: 'removed via dashboard' });
           broadcast(sseClients, 'proxy:removed', { key: safeKey });
           respondJson(res, { removed: true, key: safeKey, removedFromFile, removedFromHealth });
@@ -503,6 +551,22 @@ export function registerDashboard(
         return;
       }
 
+      if (pathname === '/dashboard-utils.js') {
+        try {
+          const js = fs.readFileSync(_DASHBOARD_UTILS_PATH, 'utf8');
+          res.writeHead(200, {
+            'Content-Type': 'application/javascript; charset=utf-8',
+            'Cache-Control': 'no-cache',
+            'X-Content-Type-Options': 'nosniff',
+          });
+          res.end(js);
+        } catch {
+          res.writeHead(404);
+          res.end('// not found');
+        }
+        return;
+      }
+
       if (pathname === '/dashboard') {
         serveDashboard(res);
         return;
@@ -544,7 +608,7 @@ export function registerDashboard(
             const frozen = h.frozenUntil > now;
             const banned = now < h.bannedUntil;
             const score = frozen || banned ? Infinity : HealthStore.computeScore(h, now);
-            return { proxy: sanitizeProxyKey(raw), ...h, score, banned, frozen };
+            return { proxy: redactProxy(raw), ...h, score, banned, frozen };
           })
           .sort((a, b) => a.score - b.score)
           .slice(0, 50);
@@ -559,6 +623,7 @@ export function registerDashboard(
           targets: cfgRef.current.targets,
           retries: cfgRef.current.retries,
           timeout: cfgRef.current.timeout,
+          requestMetrics: getRequestMetrics?.() ?? { requests: 0, successes: 0, failures: 0, bytes: 0, latencyMs: 0 },
         });
         return;
       }
@@ -649,21 +714,23 @@ export function registerDashboard(
 
       const onProgress = (result: ProxyResult, stats: { total: number; done: number; valid: number; invalid: number }) => {
         const now = Date.now();
-        if (result.valid) {
-          const latency = result.latency || 300;
-          ctx.health.recordSuccess(result.proxy, undefined, latency, now);
-        } else {
-          const err = new Error(result.error || 'validation failed');
-          ctx.health.recordFailure(result.proxy, undefined, err, ctx.cfgRef.current, now);
+        if (result.stage !== 'cancelled') {
+          if (result.valid) {
+            const latency = result.latency || 300;
+            ctx.health.recordSuccess(result.proxy, undefined, latency, now);
+          } else {
+            const err = new Error(result.error || 'validation failed');
+            ctx.health.recordFailure(result.proxy, undefined, err, ctx.cfgRef.current, now);
+          }
         }
-
+        const displayProxy = redactProxy(result.proxy);
         const line = result.valid
-          ? `[VALID] ${result.proxy} (${result.stage})`
-          : `[INVALID] ${result.proxy} - ${result.error || 'error'} (${result.stage || '?'})`;
+          ? `[VALID] ${displayProxy} (${result.stage})`
+          : `[INVALID] ${displayProxy} - ${result.error || 'error'} (${result.stage || '?'})`;
 
         broadcast(ctx.sseClients, 'validation:progress', {
           jobId: runId,
-          proxy: result.proxy,
+          proxy: displayProxy,
           valid: result.valid,
           error: result.error,
           stage: result.stage,
@@ -685,40 +752,43 @@ export function registerDashboard(
         const prune = custom.prune ?? cfg.validationPrune;
         if (prune) {
           if (result.valid.length > 0) {
-            const dir = path.dirname(path.resolve(proxyFile));
-            const tmpFile = path.join(dir, `.${path.basename(proxyFile)}.tmp-${crypto.randomBytes(8).toString('hex')}`);
-            fs.writeFileSync(tmpFile, `${result.valid.join('\n')}\n`, 'utf8');
-            fs.renameSync(tmpFile, proxyFile);
+            const valid = new Set(result.valid);
+            await atomicRewrite(proxyFile, (content) =>
+              content
+                .split('\n')
+                .filter((line) => {
+                  const parsed = parseLine(line);
+                  return !parsed || valid.has(parsed.raw);
+                })
+                .join('\n'),
+            );
             logger.info({ kept: result.valid.length, removed: result.invalid.length }, 'pruned proxy file');
           } else {
             logger.info({}, 'no valid proxies, keeping original file');
           }
         } else {
-          const existing = new Set<string>();
-          let existingContent = '';
-          try {
-            existingContent = fs.readFileSync(proxyFile, 'utf8');
-            for (const line of existingContent.split('\n')) {
-              const t = line.trim();
-              if (t) existing.add(t);
-            }
-          } catch {}
-          const newProxies = result.valid.filter((p) => !existing.has(p));
-          if (newProxies.length) {
-            const dir = path.dirname(path.resolve(proxyFile));
-            const tmpFile = path.join(dir, `.${path.basename(proxyFile)}.tmp-${crypto.randomBytes(8).toString('hex')}`);
-            const finalContent = `${(existingContent ? existingContent.replace(/\n*$/, '\n') : '') + newProxies.join('\n')}\n`;
-            fs.writeFileSync(tmpFile, finalContent, 'utf8');
-            fs.renameSync(tmpFile, proxyFile);
-            logger.info({ count: newProxies.length }, 'auto-imported new proxies');
-          }
+          let appendedCount = 0;
+          await atomicRewrite(proxyFile, (existingContent) => {
+            const existing = new Set(
+              existingContent
+                .split('\n')
+                .map((line) => line.trim())
+                .filter(Boolean),
+            );
+            const newProxies = result.valid.filter((proxy) => !existing.has(proxy));
+            if (newProxies.length === 0) return null;
+            appendedCount = newProxies.length;
+            const separator = existingContent && !existingContent.endsWith('\n') ? '\n' : '';
+            return `${existingContent}${separator}${newProxies.join('\n')}\n`;
+          });
+          if (appendedCount > 0) logger.info({ count: appendedCount }, 'auto-imported new proxies');
         }
       } catch (e: unknown) {
         logger.warn({ error: e instanceof Error ? e.message : String(e) }, 'file update error');
       }
       // Clean up health entries for invalid proxies
       for (const p of result.invalid) {
-        ctx.health.delete(p.proxy);
+        if (p.reason !== 'aborted') ctx.health.delete(p.proxy);
       }
 
       finishValidationRun(ctx.db, runId, uniq.length, validCount, invalidCount, 0);

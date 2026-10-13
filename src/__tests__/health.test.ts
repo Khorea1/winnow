@@ -298,3 +298,87 @@ describe('ensureStarEntry', () => {
     health.stop();
   });
 });
+
+function memHealth() {
+  const db = new Database(':memory:');
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS proxy_health (proxy TEXT NOT NULL, target TEXT NOT NULL DEFAULT '*', errors INTEGER NOT NULL DEFAULT 0, successes INTEGER NOT NULL DEFAULT 0, latency INTEGER NOT NULL DEFAULT 9999, banned_until INTEGER NOT NULL DEFAULT 0, last_ok INTEGER NOT NULL DEFAULT 0, fatal_errors INTEGER NOT NULL DEFAULT 0, frozen_until INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (proxy, target))`,
+  );
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS validation_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, started INTEGER NOT NULL, finished INTEGER, total INTEGER NOT NULL DEFAULT 0, passed INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0, exit_code INTEGER)`,
+  );
+  return { db, health: new HealthStore(db, { pruneAfterMs: 60000, fatalBanMs: 300000 }) };
+}
+
+describe('applyFailure ban interaction', () => {
+  it('transient failure does not truncate a longer fatal ban', () => {
+    const h = entry();
+    applyFailure(h, { code: 'ECONNREFUSED' }, CONFIG, 1000);
+    assert.equal(h.bannedUntil, 1000 + CONFIG.fatalBanMs); // 301000
+    applyFailure(h, { code: 'ETIMEDOUT' }, CONFIG, 2000);
+    // transient ban would be 2000 + 30000 = 32000 — must keep the fatal ban
+    assert.equal(h.bannedUntil, 1000 + CONFIG.fatalBanMs);
+  });
+});
+
+describe('HealthStore boot prune', () => {
+  it('does not re-ban an already-expired freeze', () => {
+    const { db, health } = memHealth();
+    const past = Date.now() - 60000;
+    db.prepare(`INSERT INTO proxy_health (proxy, target, fatal_errors, frozen_until) VALUES (?, '*', 3, ?)`).run('http://old:8080', past);
+    health.stop();
+    const health2 = new HealthStore(db, { pruneAfterMs: 60000, fatalBanMs: 300000 });
+    const e = health2.get('http://old:8080');
+    assert.ok(e);
+    assert.equal(e.frozenUntil, past); // untouched
+    assert.equal(e.bannedUntil, 0); // no fresh ban imposed
+    health2.stop();
+  });
+
+  it('demotes a live freeze to a finite ban', () => {
+    const { db, health } = memHealth();
+    const future = Date.now() + 60000;
+    db.prepare(`INSERT INTO proxy_health (proxy, target, fatal_errors, frozen_until) VALUES (?, '*', 3, ?)`).run('http://frozen:8080', future);
+    health.stop();
+    const health2 = new HealthStore(db, { pruneAfterMs: 60000, fatalBanMs: 300000 });
+    const e = health2.get('http://frozen:8080');
+    assert.ok(e);
+    assert.equal(e.frozenUntil, 0);
+    assert.ok(e.bannedUntil > Date.now());
+    health2.stop();
+  });
+});
+
+describe('HealthStore delete tombstones', () => {
+  it('recordFailure after delete() does not resurrect the entry', () => {
+    const { health } = memHealth();
+    health.recordFailure('http://gone:8080', undefined, { code: 'ETIMEDOUT' }, CONFIG, 1000);
+    assert.ok(health.has('http://gone:8080'));
+    health.delete('http://gone:8080');
+    assert.ok(!health.has('http://gone:8080'));
+    // stale in-flight failure arriving after delete must be dropped
+    health.recordFailure('http://gone:8080', undefined, { code: 'ETIMEDOUT' }, CONFIG, 2000);
+    assert.ok(!health.has('http://gone:8080'));
+    assert.equal(health.get('http://gone:8080'), undefined);
+    health.stop();
+  });
+
+  it('recordSuccess after delete() does not resurrect the entry', () => {
+    const { health } = memHealth();
+    health.recordSuccess('http://gone:8080', undefined, 100, 1000);
+    health.delete('http://gone:8080');
+    health.recordSuccess('http://gone:8080', undefined, 100, 2000);
+    assert.ok(!health.has('http://gone:8080'));
+    health.stop();
+  });
+
+  it('explicit set() after delete() re-admits the proxy', () => {
+    const { health } = memHealth();
+    health.recordFailure('http://back:8080', undefined, { code: 'ETIMEDOUT' }, CONFIG, 1000);
+    health.delete('http://back:8080');
+    health.set('http://back:8080', blankEntry());
+    health.recordSuccess('http://back:8080', undefined, 100, 2000);
+    assert.ok(health.has('http://back:8080'));
+    health.stop();
+  });
+});
