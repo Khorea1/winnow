@@ -43,11 +43,15 @@ export function initDb(dbPath: string): DatabaseType {
   const db = new Database(dbPath);
 
   try {
-    db.pragma('journal_mode = WAL');
+    const mode = String(db.pragma('journal_mode = WAL', { simple: true })).toLowerCase();
+    if (mode !== 'wal' && mode !== 'memory') db.pragma('journal_mode = DELETE');
   } catch {
+    // WAL can fail on unsupported filesystems; use a rollback journal instead.
     db.pragma('journal_mode = DELETE');
   }
   db.pragma('synchronous = NORMAL');
+  // Changes the setting for newly initialized databases; older files may still
+  // use auto_vacuum=NONE unless an explicit, offline VACUUM migrates them.
   db.pragma('auto_vacuum = INCREMENTAL');
   db.pragma('wal_autocheckpoint = 500');
 
@@ -71,30 +75,27 @@ export function initDb(dbPath: string): DatabaseType {
   return db;
 }
 
-const DEFAULT_MAINTENANCE_INTERVAL_MS = 5 * 60 * 1000;
+const MAINTENANCE_INTERVAL_MS = 5 * 60 * 1000;
+const VACUUM_PAGES_PER_TICK = 128;
 
-/** Run SQLite incremental vacuum periodically; call the returned function to stop it. */
-export function startIncrementalVacuum(db: DatabaseType, intervalMs = DEFAULT_MAINTENANCE_INTERVAL_MS): () => void {
-  let stopped = false;
+/** Reclaim free SQLite pages in bounded chunks, away from request handlers. */
+export function startIncrementalVacuum(db: DatabaseType, intervalMs = MAINTENANCE_INTERVAL_MS): () => void {
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) throw new RangeError('Vacuum interval must be positive');
   const timer = setInterval(() => {
+    if (!db.open) {
+      clearInterval(timer);
+      return;
+    }
+    if (db.inTransaction) return;
     try {
-      db.pragma('incremental_vacuum');
+      if ((db.pragma('freelist_count', { simple: true }) as number) > 0) db.pragma(`incremental_vacuum(${VACUUM_PAGES_PER_TICK})`);
     } catch {
-      // A closed database cannot be maintained; stop rather than leak a failing timer.
-      stop();
+      // Busy database: leave traffic unaffected and retry on the next tick.
     }
   }, intervalMs);
   timer.unref();
-
-  function stop() {
-    if (stopped) return;
-    stopped = true;
-    clearInterval(timer);
-  }
-
-  return stop;
+  return () => clearInterval(timer);
 }
-
 interface StmtCache {
   upsertHealth: Statement<unknown[]>;
   deleteHealth: Statement<[string]>;
