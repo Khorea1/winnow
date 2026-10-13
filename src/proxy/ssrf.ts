@@ -118,42 +118,31 @@ export function isBlockedTarget(host: string): boolean {
     lower.startsWith('instance-data.')
   )
     return true;
-  // Note: Post-DNS SSRF validation is handled in dial.ts via isBlockedAfterDns,
-  // called before connecting through the upstream proxy. This pre-DNS check only
-  // catches string-matching rules (literal IPs, known hostnames).
+  // Hostname resolution is pinned at the dial boundary via resolveTargetAddress.
   return false;
 }
 
-export async function isBlockedAfterDns(host: string): Promise<boolean> {
-  // Skip DNS resolution for bare IPs — already covered by isBlockedTarget
-  if (net.isIPv4(host) || net.isIPv6(host)) return false;
-  // KNOWN LIMITATION (DNS-rebinding TOCTOU): this resolves the target once
-  // for the check, but net.connect re-resolves at connect time. An
-  // attacker-controlled DNS that answers the check with a public IP and the
-  // connect with a private IP slips through. A full fix resolves once and
-  // connects by IP (preserving SNI/Host) across every dial path; until then,
-  // run behind trusted DNS or firewall egress to mitigate. See README.
+/** Resolve and approve a target before selecting an upstream. Never hand the
+ * original hostname to an upstream for another DNS lookup. */
+export async function resolveTargetAddress(host: string): Promise<string> {
+  const cleanHost = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+  if (isBlockedTarget(cleanHost) || cleanHost.includes('%')) throw new Error(`target blocked by SSRF rules: ${host}`);
+  if (net.isIP(cleanHost)) return cleanHost;
   let timer: NodeJS.Timeout | undefined;
   try {
-    // Fast path: if the hostname is already blocked by string rules, block it
-    if (isBlockedTarget(host)) return true;
-
-    // Use 1-second timeout to avoid slow DNS on non-existent hostnames
-    const lookupPromise = dns.promises.lookup(host, { all: true });
+    const lookupPromise = dns.promises.lookup(cleanHost, { all: true });
     const timeoutPromise = new Promise<dns.LookupAddress[]>((_, reject) => {
       timer = setTimeout(() => reject(new Error('DNS lookup timed out')), 1000);
       timer.unref?.();
     });
     const addresses = await Promise.race([lookupPromise, timeoutPromise]);
-    // dns.lookup returns either a single { address, family } or array thereof
-    const entries = Array.isArray(addresses) ? addresses : [addresses];
-    for (const entry of entries) {
-      if (isBlockedTarget(entry.address)) return true;
-    }
-    return false;
-  } catch {
-    logger.warn({ host }, 'SSRF DNS check failed, allowing through (connection will fail at dial layer)');
-    return false;
+    if (!addresses.length || addresses.some((entry) => !net.isIP(entry.address))) throw new Error('invalid DNS answer');
+    if (addresses.some((entry) => isBlockedTarget(entry.address))) throw new Error(`target blocked by SSRF rules: ${host}`);
+    return addresses[0].address;
+  } catch (e) {
+    if (e instanceof Error && e.message.includes('blocked by SSRF')) throw e;
+    logger.warn({ host, error: e instanceof Error ? e.message : String(e) }, 'target DNS resolution failed');
+    throw new Error(`target DNS resolution failed: ${host}`, { cause: e });
   } finally {
     if (timer) clearTimeout(timer);
   }

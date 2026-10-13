@@ -12,7 +12,7 @@ import { type HealthEntry, HealthStore } from '../health/index.js';
 import { createLogger } from '../logger.js';
 import { parseLine } from '../proxy/dial.js';
 import { redactProxy } from '../proxy/redact.js';
-import { isBlockedAfterDns, isBlockedTarget } from '../proxy/ssrf.js';
+import { resolveTargetAddress } from '../proxy/ssrf.js';
 import { buildOptionsFromConfig } from '../validator/index.js';
 import { runValidation } from '../validator/runner.js';
 import type { ProxyResult } from '../validator/types.js';
@@ -483,7 +483,7 @@ export function registerDashboard(
         if (custom.baseUrl && typeof custom.baseUrl === 'string') {
           try {
             const u = new URL(custom.baseUrl);
-            if (isBlockedTarget(u.hostname) || (await isBlockedAfterDns(u.hostname))) delete custom.baseUrl;
+            await resolveTargetAddress(u.hostname);
           } catch {
             delete custom.baseUrl;
           }
@@ -504,7 +504,11 @@ export function registerDashboard(
           delete custom.tlsHost;
         } else {
           // SSRF guard: prevent tlsHost from pointing to internal hosts
-          if (isBlockedTarget(custom.tlsHost) || (await isBlockedAfterDns(custom.tlsHost))) delete custom.tlsHost;
+          try {
+            await resolveTargetAddress(custom.tlsHost);
+          } catch {
+            delete custom.tlsHost;
+          }
         }
         if (custom.mode !== undefined && !['quick', 'standard', 'strict', 'stream', 'tcp-only'].includes(custom.mode)) {
           delete custom.mode;
