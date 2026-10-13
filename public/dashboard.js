@@ -677,7 +677,7 @@ import { classifyProxy as classify, sortAndFilterProxies } from './dashboard-uti
   function buildRow(p, now) {
     const status = classify(p, now);
     const tr = document.createElement('tr');
-    tr.dataset.proxyKey = p.proxy;
+    tr.dataset.proxyKey = p.id || p.proxy;
 
     // Status badge
     const tdStatus = document.createElement('td');
@@ -737,8 +737,8 @@ import { classifyProxy as classify, sortAndFilterProxies } from './dashboard-uti
       clearTimeout(armTimer);
       delBtn.disabled = true;
       try {
-        await fetchJSON(`/api/proxy?key=${encodeURIComponent(p.proxy)}`, { method: 'DELETE' });
-        proxyData = proxyData.filter((x) => x.proxy !== p.proxy);
+        await fetchJSON(`/api/proxy?key=${encodeURIComponent(p.id || p.proxy)}`, { method: 'DELETE' });
+        proxyData = proxyData.filter((x) => (p.id ? x.id !== p.id : x.proxy !== p.proxy));
         renderProxyTable();
         renderSpectrum();
         toast(t('delSuccessToast'));

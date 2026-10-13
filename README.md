@@ -325,7 +325,7 @@ Any flag left unset falls back to the matching `validation*` field in `config.js
 | `/metrics` | GET | Prometheus text exposition: healthy/total pool gauges, connection usage and rejections, completed request results, bytes and latency totals |
 | `/api/config` | GET | Read current config |
 | `/api/config` | POST | Hot-reload config (sanitized, allow-listed keys only) |
-| `/api/proxy?key=<key>` | DELETE | Remove a proxy (rewrites the proxy file atomically + clears health row + SSE `proxy:removed`) |
+| `/api/proxy?key=<key>` | DELETE | Remove one proxy by opaque `top[].id` from `/__stats` (rewrites the proxy file atomically + clears health row + SSE `proxy:removed`). Raw proxy keys remain accepted; legacy redacted keys return 409 if ambiguous. |
 | `/api/events?limit=<n>` | GET | Recent event log (JSON) |
 | `/events` | GET | Live event stream (SSE): `health:update`, `proxy:event`, `proxy:removed`, `validation:*` |
 | `/api/validate` | GET | Recent validation runs (last 20) |

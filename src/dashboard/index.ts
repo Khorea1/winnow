@@ -17,6 +17,7 @@ import { resolveTargetAddress } from '../proxy/ssrf.js';
 import { buildOptionsFromConfig } from '../validator/index.js';
 import { runValidation } from '../validator/runner.js';
 import type { ProxyResult } from '../validator/types.js';
+import { proxyId } from './proxyKey.js';
 
 const logger = createLogger('dashboard');
 
@@ -390,37 +391,52 @@ export function registerDashboard(
           return;
         }
         try {
+          const candidates = new Set([...health.entries()].map(([raw]) => raw));
+          if (fs.existsSync(proxyFile)) {
+            const content = await fs.promises.readFile(proxyFile, 'utf8');
+            for (const line of content.split('\n')) {
+              const parsed = parseLine(line);
+              if (parsed) candidates.add(parsed.raw);
+            }
+          }
+          // Raw keys remain compatible with existing API clients. Redacted keys
+          // are accepted only if they identify exactly one upstream. The UI uses
+          // an opaque ID, so multiple accounts at the same host are independent.
+          const exact = candidates.has(key) ? [key] : [];
+          const identified = exact.length ? exact : [...candidates].filter((raw) => proxyId(raw) === key);
+          const matches = identified.length ? identified : [...candidates].filter((raw) => redactProxy(raw) === key);
+          if (matches.length > 1) {
+            respondJson(res, { error: 'Ambiguous proxy key; use the ID from /__stats' }, 409);
+            return;
+          }
+          const selected = matches[0];
+          if (!selected) {
+            respondJson(res, { error: 'Proxy not found' }, 404);
+            return;
+          }
           let removedFromFile = false;
           if (fs.existsSync(proxyFile)) {
             await atomicRewrite(proxyFile, (content) => {
               const kept = content.split('\n').filter((line) => {
                 const parsed = parseLine(line);
-                if (!parsed) return true;
-                if (redactProxy(parsed.raw) === redactProxy(key)) {
-                  removedFromFile = true;
-                  return false;
-                }
-                return true;
+                if (parsed?.raw !== selected) return true;
+                removedFromFile = true;
+                return false;
               });
               return removedFromFile ? kept.join('\n') : null;
             });
           }
-          let removedFromHealth = false;
-          for (const [raw] of health.entries()) {
-            if (redactProxy(raw) === redactProxy(key)) {
-              health.delete(raw);
-              removedFromHealth = true;
-            }
-          }
+          const removedFromHealth = health.has(selected);
+          if (removedFromHealth) health.delete(selected);
           if (!removedFromFile && !removedFromHealth) {
             res.writeHead(404, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'Proxy not found' }));
             return;
           }
-          const safeKey = redactProxy(key);
+          const safeKey = redactProxy(selected);
           EventLog.safePush(eventLog, { type: 'pool', proxy: safeKey, target: '', status: 'info', detail: 'removed via dashboard' });
-          broadcast(sseClients, 'proxy:removed', { key: safeKey });
-          respondJson(res, { removed: true, key: safeKey, removedFromFile, removedFromHealth });
+          broadcast(sseClients, 'proxy:removed', { key: safeKey, id: proxyId(selected) });
+          respondJson(res, { removed: true, key: safeKey, id: proxyId(selected), removedFromFile, removedFromHealth });
         } catch (e: unknown) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: sanitizeError(e) }));
@@ -617,7 +633,7 @@ export function registerDashboard(
             const frozen = h.frozenUntil > now;
             const banned = now < h.bannedUntil;
             const score = frozen || banned ? Infinity : HealthStore.computeScore(h, now);
-            return { proxy: redactProxy(raw), ...h, score, banned, frozen };
+            return { id: proxyId(raw), proxy: redactProxy(raw), ...h, score, banned, frozen };
           })
           .sort((a, b) => a.score - b.score)
           .slice(0, 50);

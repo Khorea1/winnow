@@ -9,7 +9,7 @@ import type Database from 'better-sqlite3';
 import { DEFAULTS } from '../config/index.js';
 import { registerDashboard, unsubscribeDashboard } from '../dashboard/index.js';
 import { initDb } from '../db/index.js';
-import { HealthStore } from '../health/index.js';
+import { blankEntry, HealthStore } from '../health/index.js';
 
 // Covers registerDashboard over HTTP on an ephemeral port: auth matrix, CSP,
 // DELETE 404, config allow-list, validate 409/stop, SSE client cap.
@@ -199,6 +199,53 @@ describe('dashboard routes', () => {
     await res.arrayBuffer();
 
     assert.equal(fs.readFileSync(proxyFile, 'utf8'), '# retained\n\nhttp://127.0.0.1:10\n');
+  });
+
+  it('deletes only the intended account when upstreams share a host', async () => {
+    const first = 'http://alice:secret1@proxy.example:8080';
+    const second = 'http://bob:secret2@proxy.example:8080';
+    fs.writeFileSync(proxyFile, `# keep\n${first}\n${second}\n`);
+    health.set(first, blankEntry());
+    health.set(second, blankEntry());
+    try {
+      const stats = await fetch(`${base}/__stats`, { headers: auth });
+      const body = (await stats.json()) as { top: { id: string; proxy: string }[] };
+      const shared = body.top.filter((row) => row.proxy === 'http://***:***@proxy.example:8080');
+      assert.equal(shared.length, 2);
+      assert.notEqual(shared[0].id, shared[1].id);
+      assert.match(shared[0].id, /^p_[0-9a-f]{64}$/);
+      assert.ok(!JSON.stringify(body).includes('secret1'));
+      assert.ok(!JSON.stringify(body).includes('secret2'));
+
+      const ambiguous = await fetch(`${base}/api/proxy?key=${encodeURIComponent(shared[0].proxy)}`, {
+        method: 'DELETE',
+        headers: auth,
+      });
+      assert.equal(ambiguous.status, 409);
+      await ambiguous.arrayBuffer();
+      assert.equal(fs.readFileSync(proxyFile, 'utf8'), `# keep\n${first}\n${second}\n`);
+      assert.equal(health.has(first), true);
+      assert.equal(health.has(second), true);
+
+      const firstId = body.top.find((row) => row.id === shared[0].id)?.id;
+      assert.ok(firstId);
+      const deletion = await fetch(`${base}/api/proxy?key=${encodeURIComponent(firstId)}`, {
+        method: 'DELETE',
+        headers: auth,
+      });
+      assert.equal(deletion.status, 200);
+      const removed = (await deletion.json()) as { id: string; removedFromHealth: boolean };
+      assert.equal(removed.id, firstId);
+      assert.equal(removed.removedFromHealth, true);
+      const remaining = fs.readFileSync(proxyFile, 'utf8');
+      assert.equal(remaining.startsWith('# keep\n'), true);
+      assert.equal(remaining.includes(first), health.has(first));
+      assert.equal(remaining.includes(second), health.has(second));
+      assert.equal(Number(remaining.includes(first)) + Number(remaining.includes(second)), 1);
+    } finally {
+      health.delete(first);
+      health.delete(second);
+    }
   });
 
   it('101st SSE client is rejected with 503', { timeout: 15000 }, async () => {
