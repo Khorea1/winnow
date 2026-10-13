@@ -4,12 +4,14 @@ import type http from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
+import { atomicRewrite } from '../atomicRewrite.js';
 import { type RotatorConfig, resolveDataDir, updateConfig } from '../config/index.js';
 import { createValidationRun, finishValidationRun } from '../db/index.js';
 import { EventLog, type ProxyEvent } from '../events.js';
 import { type HealthEntry, HealthStore } from '../health/index.js';
 import { createLogger } from '../logger.js';
 import { parseLine } from '../proxy/dial.js';
+import { appendUniqueProxies, pruneValidatedLines } from '../proxy/proxyFile.js';
 import { isBlockedAfterDns, isBlockedTarget } from '../proxy/ssrf.js';
 import { buildOptionsFromConfig } from '../validator/index.js';
 import { runValidation } from '../validator/runner.js';
@@ -335,22 +337,16 @@ export function registerDashboard(
         try {
           let removedFromFile = false;
           if (fs.existsSync(proxyFile)) {
-            const lines = fs.readFileSync(proxyFile, 'utf8').split('\n');
-            const kept = lines.filter((line) => {
-              const parsed = parseLine(line);
-              if (!parsed) return true; // keep comments/blank/unparsable lines untouched
-              if (sanitizeProxyKey(parsed.raw) === sanitizeProxyKey(key)) {
+            await atomicRewrite(proxyFile, (content) => {
+              const kept = content.split('\n').filter((line) => {
+                const parsed = parseLine(line);
+                if (!parsed) return true; // keep comments/blank/unparsable lines untouched
+                if (sanitizeProxyKey(parsed.raw) !== sanitizeProxyKey(key)) return true;
                 removedFromFile = true;
                 return false;
-              }
-              return true;
+              });
+              return removedFromFile ? kept.join('\n') : null;
             });
-            if (removedFromFile) {
-              const dir = path.dirname(path.resolve(proxyFile));
-              const tmpFile = path.join(dir, `.${path.basename(proxyFile)}.tmp-${crypto.randomBytes(8).toString('hex')}`);
-              fs.writeFileSync(tmpFile, kept.join('\n'), 'utf8');
-              fs.renameSync(tmpFile, proxyFile);
-            }
           }
           let removedFromHealth = false;
           for (const [raw] of health.entries()) {
@@ -680,38 +676,27 @@ export function registerDashboard(
       validCount = result.valid.length;
       invalidCount = result.invalid.length;
 
-      // Prune ou append
+      // Prune or append using the latest on-disk contents. Concurrent dashboard
+      // mutations are serialized and additions made during validation survive.
       try {
         const prune = custom.prune ?? cfg.validationPrune;
         if (prune) {
           if (result.valid.length > 0) {
-            const dir = path.dirname(path.resolve(proxyFile));
-            const tmpFile = path.join(dir, `.${path.basename(proxyFile)}.tmp-${crypto.randomBytes(8).toString('hex')}`);
-            fs.writeFileSync(tmpFile, `${result.valid.join('\n')}\n`, 'utf8');
-            fs.renameSync(tmpFile, proxyFile);
+            const valid = new Set(result.valid);
+            const checked = new Set(uniq);
+            await atomicRewrite(proxyFile, (content) => pruneValidatedLines(content, checked, valid));
             logger.info({ kept: result.valid.length, removed: result.invalid.length }, 'pruned proxy file');
           } else {
             logger.info({}, 'no valid proxies, keeping original file');
           }
         } else {
-          const existing = new Set<string>();
-          let existingContent = '';
-          try {
-            existingContent = fs.readFileSync(proxyFile, 'utf8');
-            for (const line of existingContent.split('\n')) {
-              const t = line.trim();
-              if (t) existing.add(t);
-            }
-          } catch {}
-          const newProxies = result.valid.filter((p) => !existing.has(p));
-          if (newProxies.length) {
-            const dir = path.dirname(path.resolve(proxyFile));
-            const tmpFile = path.join(dir, `.${path.basename(proxyFile)}.tmp-${crypto.randomBytes(8).toString('hex')}`);
-            const finalContent = `${(existingContent ? existingContent.replace(/\n*$/, '\n') : '') + newProxies.join('\n')}\n`;
-            fs.writeFileSync(tmpFile, finalContent, 'utf8');
-            fs.renameSync(tmpFile, proxyFile);
-            logger.info({ count: newProxies.length }, 'auto-imported new proxies');
-          }
+          let added = 0;
+          await atomicRewrite(proxyFile, (content) => {
+            const update = appendUniqueProxies(content, result.valid);
+            added = update.added;
+            return update.content;
+          });
+          if (added) logger.info({ count: added }, 'auto-imported new proxies');
         }
       } catch (e: unknown) {
         logger.warn({ error: e instanceof Error ? e.message : String(e) }, 'file update error');

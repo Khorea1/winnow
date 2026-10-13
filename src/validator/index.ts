@@ -1,8 +1,10 @@
 import fs from 'node:fs';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import { atomicRewrite } from '../atomicRewrite.js';
 import { loadConfig } from '../config/index.js';
 import { createLogger } from '../logger.js';
+import { replaceValidatedProxies } from '../proxy/proxyFile.js';
 import { runValidation } from './runner.js';
 import type { ProgressCallback, ValidatorOptions } from './types.js';
 
@@ -240,7 +242,7 @@ Examples:
   console.log(`\nTotal: ${result.valid.length} valid, ${result.invalid.length} invalid of ${result.total}`);
 
   if (output && result.valid.length) {
-    fs.writeFileSync(output, `${result.valid.join('\n')}\n`);
+    await atomicRewrite(output, (content) => replaceValidatedProxies(content, result.valid));
     console.log(`Saved to ${output}`);
   }
 
