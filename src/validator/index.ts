@@ -1,12 +1,15 @@
 import fs from 'node:fs';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import { loadConfig } from '../config/index.js';
+import { clampInt, loadConfig } from '../config/index.js';
 import { createLogger } from '../logger.js';
 import { runValidation } from './runner.js';
 import type { ProgressCallback, ValidatorOptions } from './types.js';
 
 const logger = createLogger('validator');
+const HTTP_RESPONSE_GRACE_MS = 5000;
+const STREAM_TIMEOUT_MS = 25000;
+const STRICT_STREAM_TIMEOUT_MS = 35000;
 
 interface ValidationConfigFragment {
   validationThreads?: number;
@@ -24,27 +27,36 @@ interface ValidationConfigFragment {
   validationTlsPort?: number;
 }
 
-export function buildOptionsFromConfig(config: ValidationConfigFragment, overrides: Partial<ValidatorOptions> = {}): ValidatorOptions {
+export function buildOptionsFromConfig(config: ValidationConfigFragment, overrides: Partial<Omit<ValidatorOptions, 'timeouts'>> = {}): ValidatorOptions {
   const validModes = ['quick', 'standard', 'strict', 'stream', 'tcp-only'] as const;
   type ValidMode = (typeof validModes)[number];
   const configMode = config.validationMode && validModes.includes(config.validationMode as ValidMode) ? (config.validationMode as ValidMode) : undefined;
   if (!configMode && config.validationMode) {
     logger.warn({ mode: config.validationMode }, 'invalid validationMode, falling back to quick');
   }
+  const mode =
+    overrides.mode && validModes.includes(overrides.mode as ValidMode)
+      ? (overrides.mode as ValidMode)
+      : (() => {
+          if (overrides.mode && !validModes.includes(overrides.mode as ValidMode)) {
+            logger.warn({ mode: overrides.mode }, 'invalid CLI validation mode, falling back to config/default');
+          }
+          return configMode ?? 'quick';
+        })();
+  const connectTimeout = clampInt(overrides.connectTimeout, 1, 30, clampInt(config.validationConnectTimeout, 1, 30, 4));
+  const maxLatency = clampInt(overrides.maxLatency, 500, 30000, clampInt(config.validationMaxLatency, 500, 30000, 7000));
   return {
     threads: overrides.threads ?? config.validationThreads ?? 20,
-    mode:
-      overrides.mode && validModes.includes(overrides.mode as ValidMode)
-        ? (overrides.mode as ValidMode)
-        : (() => {
-            if (overrides.mode && !validModes.includes(overrides.mode as ValidMode)) {
-              logger.warn({ mode: overrides.mode }, 'invalid CLI validation mode, falling back to config/default');
-            }
-            return configMode ?? 'quick';
-          })(),
+    mode,
     baseUrl: overrides.baseUrl ?? config.validationBaseUrl ?? 'http://httpbin.org',
-    connectTimeout: overrides.connectTimeout ?? config.validationConnectTimeout ?? 4,
-    maxLatency: overrides.maxLatency ?? config.validationMaxLatency ?? 7000,
+    connectTimeout,
+    maxLatency,
+    timeouts: {
+      tcpMs: connectTimeout * 1000,
+      httpMs: maxLatency + HTTP_RESPONSE_GRACE_MS,
+      tlsMs: connectTimeout * 1000,
+      streamMs: mode === 'strict' ? STRICT_STREAM_TIMEOUT_MS : STREAM_TIMEOUT_MS,
+    },
     ttfbRatio: overrides.ttfbRatio ?? config.validationTtfbRatio ?? 100,
     maxGap: overrides.maxGap ?? config.validationMaxGap ?? 5000,
     insecure: overrides.insecure ?? config.validationInsecure ?? false,
@@ -114,10 +126,10 @@ Options:
   --file <path>         Proxy file to validate
   --mode <mode>         quick | standard | strict | tcp-only | stream
   --threads <n>         Concurrent validation threads
-  --timeout <ms>        Request timeout (alias for --max-latency)
+  --timeout <ms>        Latency threshold (alias for --max-latency)
   --base-url <url>      Base URL for HTTP checks
-  --max-latency <ms>    Maximum acceptable latency
-  --connect-timeout <s> TCP connect timeout (seconds)
+  --max-latency <ms>    Maximum acceptable latency (500-30000 ms)
+  --connect-timeout <s> TCP and TLS timeout (1-30 whole seconds)
   --ttfb-ratio <n>      TTFB ratio threshold
   --max-gap <ms>        Time gap check threshold
   --json <path>         Write JSON results to file

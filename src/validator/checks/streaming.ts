@@ -2,6 +2,7 @@ import type net from 'node:net';
 import tls from 'node:tls';
 import { dial, parseLine } from '../../proxy/dial.js';
 import { isBlockedTarget } from '../../proxy/ssrf.js';
+import type { Timeouts } from '../types.js';
 
 export interface StreamResult {
   chunks: number;
@@ -15,8 +16,7 @@ export async function streamingCheck(
   proxyRaw: string,
   targetUrl: string,
   opts: {
-    connectTimeout: number;
-    maxTime: number;
+    timeouts: Timeouts;
     ttfbRatio: number;
     maxGap: number;
     insecure: boolean;
@@ -35,7 +35,7 @@ export async function streamingCheck(
   const tPort = parseInt(u.port, 10) || (u.protocol === 'https:' ? 443 : 80);
   const pathAndQuery = u.pathname + u.search || '/';
 
-  const { sock: rawSock } = await dial(parsedProxy, tHost, tPort, opts.connectTimeout * 1000);
+  const { sock: rawSock } = await dial(parsedProxy, tHost, tPort, opts.timeouts.tcpMs);
   let sock: net.Socket | tls.TLSSocket = rawSock as net.Socket;
   if (u.protocol === 'https:') {
     sock = tls.connect({ socket: rawSock as net.Socket, servername: tHost, rejectUnauthorized: opts.strictTLS ? true : !opts.insecure });
@@ -47,7 +47,7 @@ export async function streamingCheck(
           sock.destroy();
           reject(new Error('TLS handshake timeout'));
         }
-      }, opts.connectTimeout * 1000);
+      }, opts.timeouts.tlsMs);
       sock.once('secureConnect', () => {
         if (!tlsDone) {
           tlsDone = true;
@@ -84,7 +84,7 @@ export async function streamingCheck(
         } catch {}
         reject(new Error('stream timeout'));
       }
-    }, opts.maxTime * 1000);
+    }, opts.timeouts.streamMs);
 
     sock.on('data', (d: Buffer) => {
       if (done) return;

@@ -44,7 +44,7 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
   }
 
   try {
-    await withAbort(tcpCheck(tcpInfo.host, tcpInfo.port, opts.connectTimeout * 1000), abortSignal);
+    await withAbort(tcpCheck(tcpInfo.host, tcpInfo.port, opts.timeouts.tcpMs), abortSignal);
   } catch {
     if (abortSignal?.aborted) return fail(trimmed, 'cancelled', 'aborted');
     return fail(trimmed, 'tcp', 'TCP unreachable', { httpCode: 0 });
@@ -58,8 +58,7 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
       const target = `${opts.baseUrl.replace(/\/$/, '')}/ip`;
       const res = await withAbort(
         httpCheck(trimmed, target, {
-          connectTimeout: opts.connectTimeout,
-          maxLatency: opts.maxLatency,
+          timeouts: opts.timeouts,
           insecure: opts.insecure,
           strictTLS: opts.strictTLS,
           anonCheck: opts.anonCheck,
@@ -104,7 +103,7 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
       const tlsPort = opts.tlsPort || 443;
       const tlsRes = await withAbort(
         tlsCheck(trimmed, tlsHost, tlsPort, {
-          connectTimeout: opts.connectTimeout,
+          timeouts: opts.timeouts,
           insecure: opts.insecure,
           strictTLS: true,
         }),
@@ -132,8 +131,7 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
       const streamUrl = `${opts.baseUrl.replace(/\/$/, '')}/stream/5?delay=0.2`;
       const res = await withAbort(
         streamingCheck(trimmed, streamUrl, {
-          connectTimeout: opts.connectTimeout,
-          maxTime: 25,
+          timeouts: opts.timeouts,
           ttfbRatio: opts.ttfbRatio,
           maxGap: opts.maxGap,
           insecure: opts.insecure,
@@ -159,8 +157,7 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
       const stream20Url = `${opts.baseUrl.replace(/\/$/, '')}/stream/20?delay=0.1`;
       const res = await withAbort(
         streamingCheck(trimmed, stream20Url, {
-          connectTimeout: opts.connectTimeout,
-          maxTime: 35,
+          timeouts: opts.timeouts,
           ttfbRatio: opts.ttfbRatio,
           maxGap: opts.maxGap,
           insecure: opts.insecure,

@@ -13,6 +13,7 @@ describe('buildOptionsFromConfig', () => {
     assert.equal(opts.baseUrl, 'http://httpbin.org');
     assert.equal(opts.connectTimeout, 4);
     assert.equal(opts.maxLatency, 7000);
+    assert.deepEqual(opts.timeouts, { tcpMs: 4000, httpMs: 12000, tlsMs: 4000, streamMs: 25000 });
     assert.equal(opts.ttfbRatio, 100);
     assert.equal(opts.maxGap, 5000);
     assert.equal(opts.insecure, false);
@@ -44,6 +45,7 @@ describe('buildOptionsFromConfig', () => {
     assert.equal(opts.baseUrl, 'http://example.com');
     assert.equal(opts.maxLatency, 1234);
     assert.equal(opts.connectTimeout, 9);
+    assert.deepEqual(opts.timeouts, { tcpMs: 9000, httpMs: 6234, tlsMs: 9000, streamMs: 35000 });
     assert.equal(opts.ttfbRatio, 50);
     assert.equal(opts.maxGap, 999);
     assert.equal(opts.insecure, true);
@@ -70,6 +72,27 @@ describe('buildOptionsFromConfig', () => {
     assert.equal(opts.tlsHost, 'custom.example');
     assert.equal(opts.tlsPort, 9443);
     assert.equal(opts.maxGap, 0);
+  });
+
+  it('resolves stage timeouts after applying overrides and preserves millisecond units', () => {
+    const opts = buildOptionsFromConfig({ validationConnectTimeout: 9, validationMaxLatency: 8000 }, { connectTimeout: 2, maxLatency: 1500 });
+    assert.equal(opts.connectTimeout, 2);
+    assert.equal(opts.maxLatency, 1500);
+    assert.deepEqual(opts.timeouts, { tcpMs: 2000, httpMs: 6500, tlsMs: 2000, streamMs: 25000 });
+  });
+
+  it('rejects out-of-range and non-integer timeout values with built-in fallbacks', () => {
+    const opts = buildOptionsFromConfig({ validationConnectTimeout: -3, validationMaxLatency: 90000 }, { connectTimeout: 1.5, maxLatency: Number.NaN });
+    assert.equal(opts.connectTimeout, 4);
+    assert.equal(opts.maxLatency, 7000);
+    assert.deepEqual(opts.timeouts, { tcpMs: 4000, httpMs: 12000, tlsMs: 4000, streamMs: 25000 });
+    assert.equal(buildOptionsFromConfig({}, { connectTimeout: 30, maxLatency: 30000 }).timeouts.httpMs, 35000);
+    assert.equal(buildOptionsFromConfig({}, { connectTimeout: 1, maxLatency: 500 }).timeouts.tcpMs, 1000);
+  });
+
+  it('falls back to valid config values when a CLI timeout override is invalid', () => {
+    const opts = buildOptionsFromConfig({ validationConnectTimeout: 8, validationMaxLatency: 3000 }, { connectTimeout: -1, maxLatency: Infinity });
+    assert.deepEqual(opts.timeouts, { tcpMs: 8000, httpMs: 8000, tlsMs: 8000, streamMs: 25000 });
   });
 });
 

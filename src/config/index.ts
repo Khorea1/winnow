@@ -127,7 +127,7 @@ const API_ALLOWED_KEYS = new Set<keyof RotatorConfig>([
   'preConnectJitterMs',
 ]);
 
-function clampInt(value: unknown, min: number, max: number, def: number): number {
+export function clampInt(value: unknown, min: number, max: number, def: number): number {
   if (typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max) return value;
   return def;
 }

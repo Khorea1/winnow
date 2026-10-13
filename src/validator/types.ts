@@ -1,10 +1,18 @@
 import type { RotatorConfig } from '../config/index.js';
+export interface Timeouts {
+  tcpMs: number;
+  httpMs: number;
+  tlsMs: number;
+  streamMs: number;
+}
+
 export interface ValidatorOptions {
   threads: number;
   mode: RotatorConfig['validationMode'];
   baseUrl: string;
   connectTimeout: number;
   maxLatency: number;
+  timeouts: Timeouts;
   ttfbRatio: number;
   maxGap: number;
   insecure: boolean;

@@ -1,5 +1,6 @@
 import { dial, parseLine } from '../../proxy/dial.js';
 import { isSoftTlsError, tlsHandshake } from '../../proxy/tls.js';
+import type { Timeouts } from '../types.js';
 
 export interface TlsCheckResult {
   authorized: boolean;
@@ -13,7 +14,7 @@ export async function tlsCheck(
   targetHost: string,
   targetPort: number,
   opts: {
-    connectTimeout: number;
+    timeouts: Timeouts;
     insecure: boolean;
     strictTLS: boolean;
   },
@@ -21,8 +22,8 @@ export async function tlsCheck(
   const parsedProxy = parseLine(proxyRaw);
   if (!parsedProxy) throw new Error('invalid format');
 
-  const { sock } = await dial(parsedProxy, targetHost, targetPort, opts.connectTimeout * 1000);
-  const res = await tlsHandshake(sock, targetHost, { insecure: opts.insecure, timeout: opts.connectTimeout * 1000 });
+  const { sock } = await dial(parsedProxy, targetHost, targetPort, opts.timeouts.tcpMs);
+  const res = await tlsHandshake(sock, targetHost, { insecure: opts.insecure, timeout: opts.timeouts.tlsMs });
 
   const selfSigned = isSoftTlsError(res);
 

@@ -251,8 +251,8 @@ Loaded from `config.json` (path overridden by `WINNOW_CONFIG` env or `--config` 
 | `validationThreads` | `20` | Concurrent validation workers |
 | `validationMode` | `quick` | `quick` / `standard` / `strict` / `stream` / `tcp-only` |
 | `validationBaseUrl` | `http://httpbin.org` | Base URL for the HTTP check stage |
-| `validationMaxLatency` | `7000` | Max acceptable HTTP latency (ms) |
-| `validationConnectTimeout` | `4` | TCP connect timeout (seconds) |
+| `validationMaxLatency` | `7000` | Max acceptable HTTP latency (500-30000 ms); HTTP completion timeout adds 5000 ms |
+| `validationConnectTimeout` | `4` | TCP connect and TLS handshake timeout (1-30 whole seconds) |
 | `validationThrottle` | `100` | Minimum delay between checks (ms) |
 | `validationTtfbRatio` | `100` | TTFB ratio threshold for streaming |
 | `validationAnonCheck` | `false` | Verify anonymity (reject transparent proxies leaking `X-Forwarded-For`) |
@@ -262,6 +262,8 @@ Loaded from `config.json` (path overridden by `WINNOW_CONFIG` env or `--config` 
 | `validationMaxGap` | `5000` | Streaming max-gap threshold (ms) |
 | `validationTlsHost` | `www.google.com` | Explicit TLS check target host |
 | `validationTlsPort` | `443` | Explicit TLS check target port |
+
+The validator resolves its TCP, HTTP, TLS, and streaming timeouts in milliseconds when validation starts. HTTP response completion allows five seconds beyond `validationMaxLatency`; the latency acceptance check still uses `validationMaxLatency` itself. Streaming allows 25 seconds in standard/stream mode and 35 seconds for both streaming stages in strict mode.
 
 ---
 

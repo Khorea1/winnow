@@ -2,6 +2,7 @@ import type net from 'node:net';
 import tls from 'node:tls';
 import { dial, parseLine } from '../../proxy/dial.js';
 import { isBlockedTarget } from '../../proxy/ssrf.js';
+import type { Timeouts } from '../types.js';
 
 export interface HttpCheckResult {
   latency: number;
@@ -15,8 +16,7 @@ export async function httpCheck(
   proxyRaw: string,
   targetUrl: string,
   opts: {
-    connectTimeout: number;
-    maxLatency: number;
+    timeouts: Timeouts;
     insecure: boolean;
     strictTLS: boolean;
     anonCheck: boolean;
@@ -39,7 +39,7 @@ export async function httpCheck(
   let ttfb = 0;
 
   // Dial via proxy
-  const { sock } = await dial(parsedProxy, tHost, tPort, opts.connectTimeout * 1000);
+  const { sock } = await dial(parsedProxy, tHost, tPort, opts.timeouts.tcpMs);
 
   let socket: net.Socket | tls.TLSSocket = sock as net.Socket;
 
@@ -76,7 +76,7 @@ export async function httpCheck(
           sock.destroy();
         } catch {}
         reject(new Error('TLS timeout'));
-      }, opts.connectTimeout * 1000);
+      }, opts.timeouts.tlsMs);
     });
     socket = tlsSocket;
   }
@@ -142,7 +142,7 @@ export async function httpCheck(
         } catch {}
         reject(new Error('HTTP timeout'));
       }
-    }, opts.maxLatency + 5000);
+    }, opts.timeouts.httpMs);
 
     const onData = (chunk: Buffer) => {
       if (done) return;
