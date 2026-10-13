@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig, resolveDataDir } from './config/index.js';
 import { registerDashboard } from './dashboard/index.js';
-import { initDb } from './db/index.js';
+import { initDb, startIncrementalVacuum } from './db/index.js';
 import { EventLog } from './events.js';
 import { blankEntry, HealthStore } from './health/index.js';
 import { createLogger } from './logger.js';
@@ -109,6 +109,7 @@ const dbPath = path.join(parsed.dir, `${parsed.name}.db`);
 
 // Initialize database
 const db = initDb(dbPath);
+const stopDbMaintenance = startIncrementalVacuum(db);
 
 // Event log
 const eventLog = new EventLog();
@@ -196,6 +197,7 @@ function shutdown(reason = 'SIGTERM') {
     } catch {}
     fileWatcher = undefined;
   }
+  stopDbMaintenance();
   // Close server first — stop accepting new connections, drain in-flight
   if (server) {
     const forceExit = setTimeout(() => {
@@ -218,6 +220,7 @@ process.on('uncaughtException', (err) => {
   logger.error({ error: err.message, stack: err.stack }, 'uncaught exception');
   // Flush health store synchronously, then exit quickly
   health.stop(); // flushes pending writes
+  stopDbMaintenance();
   db.close();
   try {
     const pidPath = path.join(resolveDataDir(), '.winnow.pid');
