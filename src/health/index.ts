@@ -36,7 +36,7 @@ export class HealthStore extends EventEmitter {
   // the tombstone so re-added proxies behave like brand-new ones.
   private _tombstones: Map<string, number> = new Map();
   private _timer: NodeJS.Timeout;
-  private _eventLog?: EventLog;
+  private _eventLog: EventLog | undefined;
   private _pendingUpdates: Set<string> = new Set();
   private _pendingEmitScheduled = false;
 

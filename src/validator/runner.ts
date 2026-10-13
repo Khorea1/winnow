@@ -65,7 +65,7 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
           insecure: opts.insecure,
           strictTLS: opts.strictTLS,
           anonCheck: opts.anonCheck,
-          abortSignal,
+          ...(abortSignal ? { abortSignal } : {}),
         }),
         abortSignal,
       );
@@ -121,7 +121,7 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
           connectTimeoutMs: opts.timeouts.tlsMs,
           insecure: opts.insecure,
           strictTLS: true,
-          abortSignal,
+          ...(abortSignal ? { abortSignal } : {}),
         }),
         abortSignal,
       );
@@ -153,7 +153,7 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
           maxGap: opts.maxGap,
           insecure: opts.insecure,
           strictTLS: opts.strictTLS,
-          abortSignal,
+          ...(abortSignal ? { abortSignal } : {}),
         }),
         abortSignal,
       );
@@ -181,7 +181,7 @@ export async function validateSingleProxy(proxyRaw: string, opts: ValidatorOptio
           maxGap: opts.maxGap,
           insecure: opts.insecure,
           strictTLS: opts.strictTLS,
-          abortSignal,
+          ...(abortSignal ? { abortSignal } : {}),
         }),
         abortSignal,
       );
@@ -221,6 +221,7 @@ export async function runValidation(
     try {
       while (idx < queue.length && !abortSignal?.aborted) {
         const proxy = queue[idx++];
+        if (proxy === undefined) break;
 
         // Per-worker throttle — with N concurrent workers, effective rate is N / throttle
         if (opts.throttle > 0) {

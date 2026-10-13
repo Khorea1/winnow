@@ -21,7 +21,7 @@ console.log(`Stopping winnow (PID ${pid})...`);
 try {
   process.kill(pid, 'SIGTERM');
 } catch (err) {
-  if (err.code === 'ESRCH') {
+  if (err instanceof Error && 'code' in err && err.code === 'ESRCH') {
     console.log('Process already exited.');
     fs.unlinkSync(pidPath);
     process.exit(0);

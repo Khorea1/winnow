@@ -53,8 +53,8 @@ export function createProxyServer(ctx: ProxyServerCtx): http.Server {
     config: ctx.config,
     health: ctx.health,
     getProxies: ctx.getProxies,
-    onRequestMetrics: ctx.onRequestMetrics,
-    eventLog: ctx.eventLog,
+    ...(ctx.onRequestMetrics ? { onRequestMetrics: ctx.onRequestMetrics } : {}),
+    ...(ctx.eventLog ? { eventLog: ctx.eventLog } : {}),
     connections,
   };
 

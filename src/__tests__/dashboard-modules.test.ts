@@ -72,7 +72,7 @@ test('dashboard routes retain auth, SSE, config, stats, validation and atomic pr
     const stats = (await (await fetch(`${base}/__stats`)).json()) as { total: number; alive: number; top: { proxy: string }[] };
     assert.equal(stats.total, 1);
     assert.equal(stats.alive, 1);
-    assert.equal(stats.top[0].proxy, '203.0.113.5:8080');
+    assert.equal(stats.top[0]?.proxy, '203.0.113.5:8080');
     assert.equal(JSON.stringify(stats).includes('secret'), false);
 
     const recent = (await (await fetch(`${base}/api/events`)).json()) as { events: unknown[] };

@@ -134,7 +134,7 @@ export function httpConnect(upstream: ParsedProxy, tHost: string, tPort: number,
         const headStr = buf.slice(0, headEnd).toString();
         const firstLine = headStr.split('\r\n')[0] || '';
         const parts = firstLine.split(' ');
-        const code = parseInt(parts[1], 10);
+        const code = parseInt(parts[1] ?? '', 10);
         if (!Number.isFinite(code)) {
           done = true;
           clearTimeout(to);
@@ -187,7 +187,7 @@ function socks5AddrBuffer(tHost: string, tPort: number): Buffer {
   pb.writeUInt16BE(tPort, 0);
   if (net.isIPv4(tHost)) {
     const parts = tHost.split('.').map(Number);
-    return Buffer.concat([Buffer.from([0x05, 0x01, 0x00, 0x01, parts[0], parts[1], parts[2], parts[3]]), pb]);
+    return Buffer.concat([Buffer.from([0x05, 0x01, 0x00, 0x01, ...parts]), pb]);
   }
   if (net.isIPv6(tHost)) {
     // Expand :: and convert to 16 raw bytes
@@ -201,10 +201,10 @@ function socks5AddrBuffer(tHost: string, tPort: number): Buffer {
     const zerosNeeded = 8 - beforeSlotCount - afterSlotCount;
     const bytes: number[] = [];
     for (const seg of before) {
-      const cleanSeg = seg.split('%')[0];
+      const cleanSeg = seg.split('%')[0] ?? '';
       if (cleanSeg.includes('.')) {
         const octets = cleanSeg.split('.').map(Number);
-        bytes.push(octets[0], octets[1], octets[2], octets[3]);
+        bytes.push(...octets);
       } else {
         const n = parseInt(cleanSeg || '0', 16);
         bytes.push((n >> 8) & 0xff, n & 0xff);
@@ -212,10 +212,10 @@ function socks5AddrBuffer(tHost: string, tPort: number): Buffer {
     }
     for (let i = 0; i < zerosNeeded; i++) bytes.push(0, 0);
     for (const seg of after) {
-      const cleanSeg = seg.split('%')[0];
+      const cleanSeg = seg.split('%')[0] ?? '';
       if (cleanSeg.includes('.')) {
         const octets = cleanSeg.split('.').map(Number);
-        bytes.push(octets[0], octets[1], octets[2], octets[3]);
+        bytes.push(...octets);
       } else {
         const n = parseInt(cleanSeg || '0', 16);
         bytes.push((n >> 8) & 0xff, n & 0xff);
@@ -331,7 +331,7 @@ export function socks5Connect(upstream: ParsedProxy, tHost: string, tPort: numbe
           minLen = 10; // 4 + IPv4(4) + port(2)
         } else if (atyp === 0x03) {
           if (replyBuf.length < 5) return; // need domain length byte
-          minLen = 7 + replyBuf[4]; // 4 + 1(domlen) + domLen + 2(port)
+          minLen = 7 + replyBuf[4]!; // 4 + 1(domlen) + domLen + 2(port)
         } else if (atyp === 0x04) {
           minLen = 22; // 4 + IPv6(16) + port(2)
         } else {
@@ -354,7 +354,7 @@ export function socks5Connect(upstream: ParsedProxy, tHost: string, tPort: numbe
             7: 'Command not supported',
             8: 'Address type not supported',
           };
-          const codeDesc = SOCKS_REPLY_CODES[replyBuf[1]] || 'unknown';
+          const codeDesc = SOCKS_REPLY_CODES[replyBuf[1]!] || 'unknown';
           const err = new Error(`socks5 connect fail ${replyBuf[1]} (${codeDesc})`);
           Object.defineProperty(err, 'socksReply', { value: replyBuf[1] });
           done = true;

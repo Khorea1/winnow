@@ -101,7 +101,7 @@ export function handleHttp(ctx: HttpHandlerCtx, req: IncomingMessage, res: Serve
             target: targetKey,
             status: 'failure',
             error: errMsg,
-            errorCode: errCode,
+            ...(errCode ? { errorCode: errCode } : {}),
             errorClass: classifyError(err),
             bytes: upstreamBytes + requestBodyBytes,
           });
@@ -119,9 +119,9 @@ export function handleHttp(ctx: HttpHandlerCtx, req: IncomingMessage, res: Serve
         const requestTransferEncoding = req.headers['transfer-encoding'];
         let reqHeaderLines = '';
         for (let i = 0; i < req.rawHeaders.length; i += 2) {
-          const k = req.rawHeaders[i].replace(/[\r\n]/g, '').trim();
+          const k = (req.rawHeaders[i] ?? '').replace(/[\r\n]/g, '').trim();
           if (k.toLowerCase() === 'host' || k.toLowerCase() in STRIPPED_REQUEST_HEADERS) continue;
-          const v = req.rawHeaders[i + 1].replace(/[\r\n]/g, '').trim();
+          const v = (req.rawHeaders[i + 1] ?? '').replace(/[\r\n]/g, '').trim();
           reqHeaderLines += `${k}: ${v}\r\n`;
         }
         if (requestTransferEncoding) reqHeaderLines += `Transfer-Encoding: ${requestTransferEncoding}\r\n`;
@@ -374,7 +374,14 @@ export function handleHttp(ctx: HttpHandlerCtx, req: IncomingMessage, res: Serve
         }
         const errCode = e != null && typeof e === 'object' && 'code' in e ? String((e as Record<string, unknown>).code) : undefined;
         logger.error({ reqId, target: targetKey, error: errMsg }, 'http all retries failed');
-        EventLog.safePush(el, { type: 'http', proxy: '(all)', target: targetKey, status: 'failure', error: errMsg, errorCode: errCode });
+        EventLog.safePush(el, {
+          type: 'http',
+          proxy: '(all)',
+          target: targetKey,
+          status: 'failure',
+          error: errMsg,
+          ...(errCode ? { errorCode: errCode } : {}),
+        });
         try {
           res.writeHead(502, { 'Content-Type': 'text/plain' });
           res.end('Bad Gateway');
@@ -392,7 +399,7 @@ export function handleHttp(ctx: HttpHandlerCtx, req: IncomingMessage, res: Serve
     }
     const errCode = e != null && typeof e === 'object' && 'code' in e ? String((e as Record<string, unknown>).code) : undefined;
     logger.error({ reqId, target: targetKey, error: errMsg }, 'http all retries failed');
-    EventLog.safePush(el, { type: 'http', proxy: '(all)', target: targetKey, status: 'failure', error: errMsg, errorCode: errCode });
+    EventLog.safePush(el, { type: 'http', proxy: '(all)', target: targetKey, status: 'failure', error: errMsg, ...(errCode ? { errorCode: errCode } : {}) });
     try {
       res.writeHead(502, { 'Content-Type': 'text/plain' });
       res.end('Bad Gateway');

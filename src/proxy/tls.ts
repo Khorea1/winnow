@@ -56,7 +56,7 @@ export function tlsHandshake(sock: net.Socket, host: string, opts: { insecure?: 
           try {
             tlsSock.end();
           } catch {}
-          resolve({ authorized, authorizationError: authError?.message, cert, protocol });
+          resolve({ authorized, ...(authError?.message ? { authorizationError: authError.message } : {}), cert, ...(protocol ? { protocol } : {}) });
         },
       );
       tlsSock.on('error', (e: Error) => {

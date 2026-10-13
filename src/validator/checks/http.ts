@@ -137,6 +137,7 @@ export async function httpCheck(
         const headerLines = headerStr.split('\r\n');
         for (let i = 1; i < headerLines.length; i++) {
           const line = headerLines[i];
+          if (line === undefined) continue;
           const sep = line.indexOf(':');
           if (sep === -1) continue;
           const name = line.slice(0, sep).trim().toLowerCase();

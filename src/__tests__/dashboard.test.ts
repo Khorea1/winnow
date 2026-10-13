@@ -212,12 +212,12 @@ describe('dashboard routes', () => {
       const body = (await stats.json()) as { top: { id: string; proxy: string }[] };
       const shared = body.top.filter((row) => row.proxy === 'proxy.example:8080');
       assert.equal(shared.length, 2);
-      assert.notEqual(shared[0].id, shared[1].id);
-      assert.match(shared[0].id, /^p_[0-9a-f]{64}$/);
+      assert.notEqual(shared[0]?.id, shared[1]?.id);
+      assert.match(shared[0]!.id, /^p_[0-9a-f]{64}$/);
       assert.ok(!JSON.stringify(body).includes('secret1'));
       assert.ok(!JSON.stringify(body).includes('secret2'));
 
-      const ambiguous = await fetch(`${base}/api/proxy?key=${encodeURIComponent(shared[0].proxy)}`, {
+      const ambiguous = await fetch(`${base}/api/proxy?key=${encodeURIComponent(shared[0]!.proxy)}`, {
         method: 'DELETE',
         headers: auth,
       });
@@ -227,7 +227,7 @@ describe('dashboard routes', () => {
       assert.equal(health.has(first), true);
       assert.equal(health.has(second), true);
 
-      const firstId = body.top.find((row) => row.id === shared[0].id)?.id;
+      const firstId = body.top.find((row) => row.id === shared[0]!.id)?.id;
       assert.ok(firstId);
       const deletion = await fetch(`${base}/api/proxy?key=${encodeURIComponent(firstId)}`, {
         method: 'DELETE',

@@ -23,7 +23,7 @@ describe('structured logging credential redaction', () => {
     }
 
     assert.equal(lines.length, 1);
-    const line = lines[0];
+    const line = lines[0]!;
     for (const secret of ['alice', 'secret', 'bob', 'pass123', 'evelyn', 'topsecret', 'carol', 'password']) {
       assert.ok(!line.includes(secret), `${secret} leaked into logs`);
     }

@@ -87,7 +87,7 @@ export function parseResponseHeaders(buf: Buffer): ParsedResponse | null {
   let connectionValues: string[] = [];
   const transferCodings: string[] = [];
   for (let i = 1; i < lines.length; i++) {
-    const line = lines[i];
+    const line = lines[i]!;
     const sep = line.indexOf(':');
     if (sep === -1) continue;
     const k = line.slice(0, sep).trim().toLowerCase();
@@ -111,7 +111,7 @@ export function parseResponseHeaders(buf: Buffer): ParsedResponse | null {
   const isChunked = transferCodings.at(-1) === 'chunked';
   const respHeaders: Record<string, string | string[]> = {};
   for (let i = 1; i < lines.length; i++) {
-    const line = lines[i];
+    const line = lines[i]!;
     const sep = line.indexOf(':');
     if (sep === -1) continue;
     const k = line.slice(0, sep).trim();
@@ -165,7 +165,7 @@ export function createChunkedBodyDecoder(onBody: (chunk: Buffer) => void): Chunk
           offset = lineEnd + 2;
 
           if (state === 'size') {
-            const sizeText = line.split(';', 1)[0].trim();
+            const sizeText = (line.split(';', 1)[0] ?? '').trim();
             if (!/^[\da-f]+$/i.test(sizeText)) return false;
             remaining = Number.parseInt(sizeText, 16);
             if (!Number.isSafeInteger(remaining)) return false;

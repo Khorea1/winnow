@@ -22,8 +22,8 @@ function documentedEndpoints(): Endpoint[] {
   const section = readme.split('## API endpoints\n')[1]?.split('\n## ')[0];
   assert.ok(section, 'README must contain an API endpoints table');
   return [...section.matchAll(/^\|\s*`(\/[^`]*)`\s*\|\s*(GET|POST|DELETE)\s*\|/gm)].map((match) => ({
-    path: match[1].split('?')[0],
-    method: match[2],
+    path: match[1]!.split('?')[0]!,
+    method: match[2]!,
   }));
 }
 
@@ -103,7 +103,7 @@ describe('README API contract', () => {
       const response = await fetch(`${base}${route}`, {
         method,
         headers: { authorization: 'Bearer readme-contract-token' },
-        body: malformed ? '{' : undefined,
+        ...(malformed ? { body: '{' } : {}),
         signal: controller.signal,
       });
       const expected = malformed || (method === 'DELETE' && route === '/api/proxy') ? 400 : 200;

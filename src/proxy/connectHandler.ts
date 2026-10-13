@@ -146,7 +146,7 @@ export function handleConnect(ctx: ConnectHandlerCtx, req: IncomingMessage, clie
             target: targetKey,
             status: 'failure',
             error: errMsg,
-            errorCode: errCode,
+            ...(errCode ? { errorCode: errCode } : {}),
             errorClass: classifyError(err),
           });
         };
@@ -211,7 +211,7 @@ export function handleConnect(ctx: ConnectHandlerCtx, req: IncomingMessage, clie
           target: targetKey,
           status: 'failure',
           error: errMsg,
-          errorCode: errCode,
+          ...(errCode ? { errorCode: errCode } : {}),
         });
         try {
           clientSock.write('HTTP/1.1 502 Bad Gateway\r\n\r\n');
@@ -235,7 +235,7 @@ export function handleConnect(ctx: ConnectHandlerCtx, req: IncomingMessage, clie
       target: targetKey,
       status: 'failure',
       error: errMsg,
-      errorCode: errCode,
+      ...(errCode ? { errorCode: errCode } : {}),
     });
     try {
       clientSock.write('HTTP/1.1 502 Bad Gateway\r\n\r\n');

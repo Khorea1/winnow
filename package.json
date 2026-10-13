@@ -12,7 +12,7 @@
     "validator": "node dist/validator/index.js",
     "dev": "tsx watch src/index.ts",
     "test": "tsx --test \"src/**/*.test.ts\" \"src/**/*.test.js\"",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --project tsconfig.scripts.json",
     "lint": "biome check src/ scripts/ public/",
     "lint:fix": "biome check --write src/ scripts/ public/",
     "stop": "node scripts/stop.mjs",
