@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { atomicRewrite } from '../atomicRewrite.js';
 import { loadConfig } from '../config/index.js';
 import { createLogger } from '../logger.js';
+import { replaceValidatedProxies } from '../proxy/proxyFile.js';
 import { runValidation } from './runner.js';
 import type { ProgressCallback, Timeouts, ValidatorOptions, ValidatorOptionsOverrides } from './types.js';
 
@@ -263,7 +264,7 @@ Examples:
   console.log(`\nTotal: ${result.valid.length} valid, ${result.invalid.length} invalid of ${result.total}`);
 
   if (output && result.valid.length) {
-    await atomicRewrite(output, () => `${result.valid.join('\n')}\n`);
+    await atomicRewrite(output, (content) => replaceValidatedProxies(content, result.valid));
     console.log(`Saved to ${output}`);
   }
 

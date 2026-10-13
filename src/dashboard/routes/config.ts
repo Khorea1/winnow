@@ -3,8 +3,8 @@ import { updateConfig } from '../../config/index.js';
 import { readBody, respondJson } from '../http.js';
 import type { DashboardRouteContext } from '../types.js';
 
-export async function handleConfigRoute(req: IncomingMessage, res: ServerResponse, pathname: string, ctx: DashboardRouteContext): Promise<boolean> {
-  if (pathname !== '/api/config') return false;
+export async function handleConfigRoute(req: IncomingMessage, res: ServerResponse, urlObj: URL, ctx: DashboardRouteContext): Promise<boolean> {
+  if (urlObj.pathname !== '/api/config') return false;
   if (req.method === 'GET') {
     respondJson(res, ctx.config.current);
     return true;

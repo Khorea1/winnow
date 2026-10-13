@@ -31,21 +31,15 @@ export interface DashboardRegistrationContext {
   getRequestMetrics?: () => { requests: number; successes: number; failures: number; bytes: number; latencyMs: number };
 }
 
-export interface ValidationRunManager {
+export interface ValidationManager {
   start(res: ServerResponse, custom: Partial<ValidationOverrides>): Promise<void>;
   stop(res: ServerResponse): void;
   isRunning(): boolean;
   abort(): void;
 }
 
-export interface DashboardRouteContext {
+export interface DashboardRouteContext extends DashboardRegistrationContext {
   server: http.Server;
-  config: { current: RotatorConfig };
-  health: HealthStore;
-  db: Database.Database;
-  eventLog: EventLog | undefined;
-  onConfigChange: ((updated: RotatorConfig) => void) | undefined;
-  getRequestMetrics: (() => { requests: number; successes: number; failures: number; bytes: number; latencyMs: number }) | undefined;
   sseClients: Set<ServerResponse>;
-  validation: ValidationRunManager;
+  validation: ValidationManager;
 }
