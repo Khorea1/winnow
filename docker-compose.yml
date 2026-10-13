@@ -5,6 +5,7 @@
 
 volumes:
   winnow-data:
+    name: ${WINNOW_DATA_VOLUME:-winnow-data}
     # Named volume; replace with a bind mount for easier file editing:
     # driver: local
     # driver_opts:
@@ -14,12 +15,12 @@ volumes:
 
 services:
   winnow:
-    image: winnow:latest
+    image: winnow:local
     build:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8080:8080"
+      - "${WINNOW_PORT:-8080}:${WINNOW_PORT:-8080}"
     volumes:
       - winnow-data:/srv/data
       # Optional: bind your proxy file directly:
@@ -27,7 +28,7 @@ services:
     environment:
       - WINNOW_DATA_DIR=/srv/data
       - WINNOW_CONFIG=/srv/data/config.json
-      - WINNOW_PORT=8080
+      - WINNOW_PORT=${WINNOW_PORT:-8080}
       # Optional dashboard auth tokens; each variable passes through when set on the host:
       - WINNOW_TOKEN
       - DASHBOARD_TOKEN
@@ -35,7 +36,7 @@ services:
       # - WINNOW_PROXY_FILE=/srv/data/scrapped.txt
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "node -e \"const t=process.env.WINNOW_TOKEN||process.env.DASHBOARD_TOKEN||process.env.API_TOKEN;require('http').get('http://localhost:8080/__stats',t?{headers:{Authorization:'Bearer '+t}}:{},r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>process.exit(r.statusCode===200&&d.includes('total')?0:1))}).on('error',()=>process.exit(1))\""]
+      test: ["CMD-SHELL", "node -e \"const t=process.env.WINNOW_TOKEN||process.env.DASHBOARD_TOKEN||process.env.API_TOKEN;require('http').get('http://localhost:'+(process.env.WINNOW_PORT||8080)+'/__stats',t?{headers:{Authorization:'Bearer '+t}}:{},r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>process.exit(r.statusCode===200&&d.includes('total')?0:1))}).on('error',()=>process.exit(1))\""]
       interval: 30s
       timeout: 5s
       retries: 3
