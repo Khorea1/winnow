@@ -14,3 +14,7 @@ config.json
 RULES.md
 docs/
 .winnow.pid
+
+# Local working memory and Worktrunk checkouts: never repository content
+.dev/
+.worktrees/
