@@ -5,7 +5,7 @@
 FROM node:22-bookworm-slim AS builder
 WORKDIR /app
 
-# Install build deps (better-sqlite3 needs node-gyp)
+# Build deps for the native addon when no prebuilt binary is available
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
     python3 make g++ \
   && rm -rf /var/lib/apt/lists/*
@@ -21,7 +21,13 @@ COPY public/ public/
 COPY scripts/ scripts/
 RUN npm run build
 
-# ── Stage 2: Runtime ────────────────────────────────────────
+# ── Stage 2: Production dependencies ────────────────────────
+# Reuse the compiled tree and drop devDependencies, so the runtime image
+# ships only what the server needs without rebuilding the native addon.
+FROM builder AS prod-deps
+RUN npm prune --omit=dev
+
+# ── Stage 3: Runtime ────────────────────────────────────────
 FROM node:22-bookworm-slim
 
 # Add non-root user
@@ -32,14 +38,13 @@ ENV WINNOW_DATA_DIR=/srv/data \
     WINNOW_CONFIG=/srv/data/config.json \
     NODE_ENV=production
 
-# Copy built artifacts + node_modules (includes native better-sqlite3)
-COPY --from=builder /app/dist        dist/
-COPY --from=builder /app/node_modules node_modules/
-COPY --from=builder /app/package.json ./
+# Copy production dependencies and built artifacts
+COPY --from=prod-deps /app/node_modules node_modules/
+COPY --from=builder   /app/dist         dist/
+COPY --from=builder   /app/package.json ./
 
-# Copy static dashboard assets
-COPY public/ public/
-COPY --from=builder /app/public/dashboard.html public/dashboard.html
+# Copy static dashboard assets (includes the assembled dashboard.html)
+COPY --from=builder /app/public public/
 
 # Create writable data dir
 RUN mkdir -p /srv/data && chown -R rotator:rotator /srv
